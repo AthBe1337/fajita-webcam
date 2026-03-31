@@ -367,11 +367,13 @@ int main(int argc, char* argv[]) {
     printf("\nShutting down...\n");
     pipeline.stop();
     camera.stop_streaming();
+    mjpeg_stream.stop();
     http.stop();
-    camera.close();
 
     if (http_thread.joinable())
-        http_thread.detach();  // HTTP thread will exit when listen_fd is closed
+        http_thread.join();
+
+    camera.close();
 
     return 0;
 }

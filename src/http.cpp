@@ -75,9 +75,20 @@ bool HttpServer::start(int port) {
 void HttpServer::stop() {
     running_ = false;
     if (listen_fd_ >= 0) {
+        ::shutdown(listen_fd_, SHUT_RDWR);
         ::close(listen_fd_);
         listen_fd_ = -1;
     }
+
+    std::vector<int> clients;
+    {
+        std::lock_guard<std::mutex> lock(client_mutex_);
+        clients.assign(client_fds_.begin(), client_fds_.end());
+    }
+    for (int fd : clients)
+        ::shutdown(fd, SHUT_RDWR);
+
+    join_client_threads();
 }
 
 void HttpServer::accept_loop() {
@@ -91,17 +102,32 @@ void HttpServer::accept_loop() {
             perror("accept");
             continue;
         }
-        // Handle each client in a new thread
-        std::thread([this, client]() {
+
+        if (!running_) {
+            ::close(client);
+            break;
+        }
+
+        // Handle each client in a worker thread; track it for clean shutdown.
+        std::lock_guard<std::mutex> lock(client_mutex_);
+        client_threads_.emplace_back([this, client]() {
             handle_client(client);
-        }).detach();
+        });
     }
+
+    join_client_threads();
 }
 
 void HttpServer::handle_client(int fd) {
+    register_client_fd(fd);
+    auto cleanup = [&]() {
+        unregister_client_fd(fd);
+        ::close(fd);
+    };
+
     HttpRequest req;
     if (!parse_request(fd, req)) {
-        ::close(fd);
+        cleanup();
         return;
     }
 
@@ -109,7 +135,7 @@ void HttpServer::handle_client(int fd) {
     for (auto& sr : stream_routes_) {
         if (req.path == sr.path && req.method == "GET") {
             sr.handler(fd, req);
-            ::close(fd);
+            cleanup();
             return;
         }
     }
@@ -119,7 +145,7 @@ void HttpServer::handle_client(int fd) {
         if (r.method == req.method && r.path == req.path) {
             auto resp = r.handler(req);
             send_response(fd, resp);
-            ::close(fd);
+            cleanup();
             return;
         }
     }
@@ -130,14 +156,37 @@ void HttpServer::handle_client(int fd) {
         if (file_path == "/") file_path = "/index.html";
         if (serve_embedded_static(fd, file_path) ||
             (!static_dir_.empty() && serve_static(fd, file_path))) {
-            ::close(fd);
+            cleanup();
             return;
         }
     }
 
     // 404
     send_response(fd, HttpResponse::error(404, "Not Found"));
-    ::close(fd);
+    cleanup();
+}
+
+void HttpServer::register_client_fd(int fd) {
+    std::lock_guard<std::mutex> lock(client_mutex_);
+    client_fds_.insert(fd);
+}
+
+void HttpServer::unregister_client_fd(int fd) {
+    std::lock_guard<std::mutex> lock(client_mutex_);
+    client_fds_.erase(fd);
+}
+
+void HttpServer::join_client_threads() {
+    std::vector<std::thread> threads;
+    {
+        std::lock_guard<std::mutex> lock(client_mutex_);
+        threads.swap(client_threads_);
+    }
+
+    for (auto& t : threads) {
+        if (t.joinable())
+            t.join();
+    }
 }
 
 bool HttpServer::parse_request(int fd, HttpRequest& req) {

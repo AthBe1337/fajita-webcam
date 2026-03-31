@@ -3,8 +3,11 @@
 #include <string>
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <mutex>
+#include <thread>
+#include <atomic>
 
 struct HttpRequest {
     std::string method;  // GET, POST
@@ -70,6 +73,9 @@ private:
     bool serve_embedded_static(int fd, const std::string& path);
     bool serve_static(int fd, const std::string& path);
     std::string guess_content_type(const std::string& path);
+    void register_client_fd(int fd);
+    void unregister_client_fd(int fd);
+    void join_client_threads();
 
     struct Route {
         std::string method;
@@ -85,6 +91,9 @@ private:
     std::vector<StreamRoute> stream_routes_;
     std::string static_dir_;
     int listen_fd_ = -1;
-    bool running_ = false;
+    std::atomic<bool> running_{false};
     int epoll_fd_ = -1;
+    std::mutex client_mutex_;
+    std::vector<std::thread> client_threads_;
+    std::unordered_set<int> client_fds_;
 };

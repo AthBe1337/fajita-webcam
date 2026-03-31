@@ -12,6 +12,9 @@ public:
     MjpegStream();
     ~MjpegStream();
 
+    // Stop all waiting stream clients and unblock serve loops.
+    void stop();
+
     // Producer: push a new JPEG frame (thread-safe)
     void push_frame(const uint8_t* jpeg_data, size_t jpeg_size);
 
@@ -33,6 +36,7 @@ private:
     std::mutex mutex_;
     std::vector<uint8_t> current_frame_;
     std::atomic<uint64_t> frame_seq_{0};
+    std::atomic<bool> running_{true};
 
     // Simple broadcast: condition variable for waiting consumers
     std::mutex wait_mutex_;

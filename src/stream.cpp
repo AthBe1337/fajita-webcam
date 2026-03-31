@@ -4,7 +4,12 @@
 #include <condition_variable>
 
 MjpegStream::MjpegStream() {}
-MjpegStream::~MjpegStream() {}
+MjpegStream::~MjpegStream() { stop(); }
+
+void MjpegStream::stop() {
+    running_ = false;
+    wait_cv_.notify_all();
+}
 
 void MjpegStream::push_frame(const uint8_t* jpeg_data, size_t jpeg_size) {
     {
@@ -35,14 +40,17 @@ bool MjpegStream::serve_client(int fd) {
 
     uint64_t last_seq = 0;
 
-    while (true) {
+    while (running_) {
         // Wait for new frame
         {
             std::unique_lock<std::mutex> lock(wait_mutex_);
             wait_cv_.wait(lock, [&]() {
-                return frame_seq_.load() > last_seq;
+                return !running_ || frame_seq_.load() > last_seq;
             });
         }
+
+        if (!running_)
+            return false;
 
         // Get current frame
         std::vector<uint8_t> frame;
@@ -68,4 +76,6 @@ bool MjpegStream::serve_client(int fd) {
         if (!HttpServer::send_string(fd, "\r\n"))
             return false;
     }
+
+    return false;
 }
