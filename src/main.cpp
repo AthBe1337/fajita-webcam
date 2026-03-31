@@ -22,6 +22,16 @@ using json = nlohmann::json;
 static std::atomic<bool> g_running{true};
 static void signal_handler(int) { g_running = false; }
 
+static const char* bayer_name(BayerPattern pattern) {
+    switch (pattern) {
+    case BayerPattern::RGGB: return "rggb";
+    case BayerPattern::BGGR: return "bggr";
+    case BayerPattern::GRBG: return "grbg";
+    case BayerPattern::GBRG: return "gbrg";
+    }
+    return "unknown";
+}
+
 // Find the static/ directory relative to the executable
 static std::string find_static_dir(const char* argv0) {
     namespace fs = std::filesystem;
@@ -169,7 +179,7 @@ int main(int argc, char* argv[]) {
                 {"height", c.height},
                 {"has_af", c.has_af},
                 {"rotation", c.rotation},
-                {"bayer", c.bayer == BayerPattern::RGGB ? "rggb" : "bggr"},
+                {"bayer", bayer_name(c.bayer)},
                 {"exposure", {{"min", c.exposure.min}, {"max", c.exposure.max}, {"default", c.exposure.def}}},
                 {"analogue_gain", {{"min", c.analogue_gain.min}, {"max", c.analogue_gain.max}, {"default", c.analogue_gain.def}}},
                 {"digital_gain", {{"min", c.digital_gain.min}, {"max", c.digital_gain.max}, {"default", c.digital_gain.def}}},

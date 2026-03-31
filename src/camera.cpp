@@ -35,7 +35,7 @@ static const CameraConfig kDefaultConfigs[] = {
         "imx519", "imx519 16-001a", "msm_csiphy0",
         4656, 3496, 5824,
         MEDIA_BUS_FMT_SRGGB10_1X10, V4L2_PIX_FMT_SRGGB10P,
-        BayerPattern::RGGB,
+        BayerPattern::RGGB, 1,
         {20, 6737, 1000}, {0, 960, 0}, {256, 65535, 256},
         true, "lc898217xc 16-0072", 270
     },
@@ -43,7 +43,7 @@ static const CameraConfig kDefaultConfigs[] = {
         "imx376k", "imx376 17-0010", "msm_csiphy1",
         2592, 1940, 3248,
         MEDIA_BUS_FMT_SBGGR10_1X10, V4L2_PIX_FMT_SBGGR10P,
-        BayerPattern::BGGR,
+        BayerPattern::BGGR, 1,
         {4, 65515, 1600}, {0, 480, 0}, {0, 4096, 1024},
         true, "lc898217xc 17-0074", 270
     },
@@ -51,7 +51,7 @@ static const CameraConfig kDefaultConfigs[] = {
         "imx371", "imx371 16-0010", "msm_csiphy2",
         4656, 3496, 5824,
         MEDIA_BUS_FMT_SBGGR10_1X10, V4L2_PIX_FMT_SBGGR10P,
-        BayerPattern::BGGR,
+        BayerPattern::BGGR, 2,
         {4, 65515, 1600}, {0, 480, 0}, {0, 4096, 1024},
         false, "", 90
     },

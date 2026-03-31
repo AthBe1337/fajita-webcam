@@ -10,23 +10,35 @@
 #define HAS_NEON 0
 #endif
 
-// Determine which Bayer channel a pixel belongs to
-// Returns 0=R, 1=Gr, 2=Gb, 3=B for RGGB
-// For BGGR: 0=B, 1=Gb, 2=Gr, 3=R (we remap so R/B gains apply correctly)
-static inline bool is_red(int x, int y, BayerPattern pat) {
+enum class BayerSite { R, Gr, Gb, B };
+
+static inline BayerSite bayer_site(int x, int y, BayerPattern pat) {
+    bool odd_x = (x & 1) != 0;
+    bool odd_y = (y & 1) != 0;
+
     switch (pat) {
-    case BayerPattern::RGGB: return (x % 2 == 0) && (y % 2 == 0);
-    case BayerPattern::BGGR: return (x % 2 == 1) && (y % 2 == 1);
+    case BayerPattern::RGGB:
+        if (!odd_y) return odd_x ? BayerSite::Gr : BayerSite::R;
+        return odd_x ? BayerSite::B : BayerSite::Gb;
+    case BayerPattern::BGGR:
+        if (!odd_y) return odd_x ? BayerSite::Gb : BayerSite::B;
+        return odd_x ? BayerSite::R : BayerSite::Gr;
+    case BayerPattern::GRBG:
+        if (!odd_y) return odd_x ? BayerSite::R : BayerSite::Gr;
+        return odd_x ? BayerSite::Gb : BayerSite::B;
+    case BayerPattern::GBRG:
+        if (!odd_y) return odd_x ? BayerSite::B : BayerSite::Gb;
+        return odd_x ? BayerSite::Gr : BayerSite::R;
     }
-    return false;
+    return BayerSite::R;
+}
+
+static inline bool is_red(int x, int y, BayerPattern pat) {
+    return bayer_site(x, y, pat) == BayerSite::R;
 }
 
 static inline bool is_blue(int x, int y, BayerPattern pat) {
-    switch (pat) {
-    case BayerPattern::RGGB: return (x % 2 == 1) && (y % 2 == 1);
-    case BayerPattern::BGGR: return (x % 2 == 0) && (y % 2 == 0);
-    }
-    return false;
+    return bayer_site(x, y, pat) == BayerSite::B;
 }
 
 static inline uint8_t clamp8(float v) {
@@ -146,15 +158,6 @@ void isp_demosaic(const uint8_t* bayer, uint8_t* rgb,
     // Simple bilinear interpolation demosaicing
     // For each pixel, interpolate missing color channels from neighbors
 
-    // Offsets for RGGB: R at (0,0), Gr at (1,0), Gb at (0,1), B at (1,1)
-    // For BGGR: B at (0,0), Gb at (1,0), Gr at (0,1), R at (1,1)
-    int r_dx, r_dy, b_dx, b_dy;
-    if (pattern == BayerPattern::RGGB) {
-        r_dx = 0; r_dy = 0; b_dx = 1; b_dy = 1;
-    } else { // BGGR
-        b_dx = 0; b_dy = 0; r_dx = 1; r_dy = 1;
-    }
-
     auto get = [&](int x, int y) -> uint8_t {
         x = std::clamp(x, 0, width - 1);
         y = std::clamp(y, 0, height - 1);
@@ -164,29 +167,29 @@ void isp_demosaic(const uint8_t* bayer, uint8_t* rgb,
     for (int y = 0; y < height; y++) {
         uint8_t* out = rgb + y * width * 3;
         for (int x = 0; x < width; x++) {
-            int bx = x % 2, by = y % 2;
             float r, g, b;
 
-            if (bx == r_dx && by == r_dy) {
-                // Red pixel
+            switch (bayer_site(x, y, pattern)) {
+            case BayerSite::R:
                 r = get(x, y);
                 g = (get(x-1, y) + get(x+1, y) + get(x, y-1) + get(x, y+1)) * 0.25f;
                 b = (get(x-1, y-1) + get(x+1, y-1) + get(x-1, y+1) + get(x+1, y+1)) * 0.25f;
-            } else if (bx == b_dx && by == b_dy) {
-                // Blue pixel
+                break;
+            case BayerSite::B:
                 b = get(x, y);
                 g = (get(x-1, y) + get(x+1, y) + get(x, y-1) + get(x, y+1)) * 0.25f;
                 r = (get(x-1, y-1) + get(x+1, y-1) + get(x-1, y+1) + get(x+1, y+1)) * 0.25f;
-            } else if (by == r_dy) {
-                // Green pixel on red row (Gr)
+                break;
+            case BayerSite::Gr:
                 g = get(x, y);
                 r = (get(x-1, y) + get(x+1, y)) * 0.5f;
                 b = (get(x, y-1) + get(x, y+1)) * 0.5f;
-            } else {
-                // Green pixel on blue row (Gb)
+                break;
+            case BayerSite::Gb:
                 g = get(x, y);
                 b = (get(x-1, y) + get(x+1, y)) * 0.5f;
                 r = (get(x, y-1) + get(x, y+1)) * 0.5f;
+                break;
             }
 
             out[x * 3 + 0] = clamp8(r);
@@ -217,11 +220,19 @@ ChannelStats isp_compute_stats(const uint8_t* bayer,
             uint8_t p01 = bayer[(y+1) * width + x];
             uint8_t p11 = bayer[(y+1) * width + x + 1];
 
-            if (pattern == BayerPattern::RGGB) {
-                r_sum += p00; gr_sum += p10; gb_sum += p01; b_sum += p11;
-            } else {
-                b_sum += p00; gb_sum += p10; gr_sum += p01; r_sum += p11;
-            }
+            auto accumulate = [&](uint8_t value, int px, int py) {
+                switch (bayer_site(px, py, pattern)) {
+                case BayerSite::R: r_sum += value; break;
+                case BayerSite::Gr: gr_sum += value; break;
+                case BayerSite::Gb: gb_sum += value; break;
+                case BayerSite::B: b_sum += value; break;
+                }
+            };
+
+            accumulate(p00, x, y);
+            accumulate(p10, x + 1, y);
+            accumulate(p01, x, y + 1);
+            accumulate(p11, x + 1, y + 1);
             count++;
         }
     }

@@ -4,7 +4,7 @@
 #include <vector>
 #include <functional>
 
-enum class BayerPattern { RGGB, BGGR };
+enum class BayerPattern { RGGB, BGGR, GRBG, GBRG };
 
 struct ParamRange {
     int min, max, def;
@@ -18,6 +18,7 @@ struct CameraConfig {
     uint32_t mbus_code;
     uint32_t v4l2_pixfmt;
     BayerPattern bayer;
+    int cfa_block;
     ParamRange exposure;
     ParamRange analogue_gain;
     ParamRange digital_gain;
