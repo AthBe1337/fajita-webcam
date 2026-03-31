@@ -93,31 +93,27 @@ void isp_unpack_wb(const uint8_t* mipi_in, uint8_t* bayer_out,
             }
         }
     } else {
-        // Downsampled: process blocks of (downsample*2) bayer pixels
-        // Each 2x2 bayer block has R, Gr, Gb, B. We average NxN such blocks.
+        // Downsample in raw Bayer space while preserving the CFA phase.
+        // Averaging every pixel in a ds x ds block destroys the Bayer mosaic and
+        // produces a near-greyscale image after demosaic. Instead, each output
+        // pixel averages only samples from the matching Bayer phase.
         int ds = downsample;
         int out_w = width / ds;
         int out_h = height / ds;
+        int samples_per_pixel = (ds * ds) / 4;
 
-        // We need a temporary line buffer for unpacked data
-        // Process ds rows at a time, accumulate
         std::vector<uint8_t> line_buf(width);
+        std::vector<int> accum(out_w);
 
         for (int oy = 0; oy < out_h; oy++) {
-            // Each output row corresponds to ds input rows
-            // The bayer pattern repeats every 2 rows, so ds must be even
-            // For ds=2: average rows [oy*2, oy*2+1] pairwise
-            // For ds=4: average rows [oy*4..oy*4+3]
+            std::fill(accum.begin(), accum.end(), 0);
 
-            float accum[4096 * 4]; // enough for max width
-            memset(accum, 0, sizeof(float) * out_w * 4);
-
-            for (int dy = 0; dy < ds; dy++) {
+            // Because ds is even, every output block starts at an even/even input
+            // coordinate. The output Bayer phase is therefore defined by ox/oy parity.
+            for (int dy = (oy & 1); dy < ds; dy += 2) {
                 int iy = oy * ds + dy;
-                if (iy >= height) break;
                 const uint8_t* line = mipi_in + iy * stride;
 
-                // Unpack this line
                 for (int x = 0; x + 3 < width; x += 4) {
                     int off = x * 5 / 4;
                     line_buf[x + 0] = line[off + 0];
@@ -126,27 +122,20 @@ void isp_unpack_wb(const uint8_t* mipi_in, uint8_t* bayer_out,
                     line_buf[x + 3] = line[off + 3];
                 }
 
-                // Accumulate into output columns
                 for (int ox = 0; ox < out_w; ox++) {
-                    float sum = 0;
-                    for (int dx = 0; dx < ds; dx++) {
-                        int ix = ox * ds + dx;
-                        if (ix < width)
-                            sum += line_buf[ix];
-                    }
-                    accum[ox] += sum;
+                    int block_x = ox * ds;
+                    for (int dx = (ox & 1); dx < ds; dx += 2)
+                        accum[ox] += line_buf[block_x + dx];
                 }
             }
 
-            // Write averaged output with WB
-            float scale = 1.0f / (ds * ds);
+            float scale = 1.0f / samples_per_pixel;
             uint8_t* out = bayer_out + oy * out_w;
             for (int ox = 0; ox < out_w; ox++) {
-                float val = accum[ox] * scale;
                 float gain = 1.0f;
                 if (is_red(ox, oy, pattern)) gain = r_gain;
                 else if (is_blue(ox, oy, pattern)) gain = b_gain;
-                out[ox] = clamp8(val * gain);
+                out[ox] = clamp8(accum[ox] * scale * gain);
             }
         }
     }
