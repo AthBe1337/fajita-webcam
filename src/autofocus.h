@@ -16,6 +16,9 @@ public:
 
     // Trigger one-shot AF. Non-blocking, runs in background.
     void trigger(Camera& camera, std::function<float()> get_metric);
+    void reset();
+    void set_manual_position(int pos);
+    void mark_failed();
 
     void set_mode(AFMode mode) { mode_ = mode; }
     AFMode mode() const { return mode_; }

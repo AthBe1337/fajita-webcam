@@ -10,6 +10,33 @@ AutoFocus::~AutoFocus() {
     if (thread_.joinable()) thread_.join();
 }
 
+void AutoFocus::reset() {
+    std::lock_guard<std::mutex> lock(thread_mutex_);
+    if (thread_.joinable()) thread_.join();
+    mode_ = AFMode::Manual;
+    state_ = AFState::Idle;
+    best_pos_ = 0;
+    locked_metric_ = 0;
+    check_counter_ = 0;
+}
+
+void AutoFocus::set_manual_position(int pos) {
+    std::lock_guard<std::mutex> lock(thread_mutex_);
+    if (thread_.joinable()) thread_.join();
+    best_pos_ = pos;
+    state_ = AFState::Idle;
+    locked_metric_ = 0;
+    check_counter_ = 0;
+}
+
+void AutoFocus::mark_failed() {
+    std::lock_guard<std::mutex> lock(thread_mutex_);
+    if (thread_.joinable()) thread_.join();
+    state_ = AFState::Failed;
+    locked_metric_ = 0;
+    check_counter_ = 0;
+}
+
 void AutoFocus::trigger(Camera& camera, std::function<float()> get_metric) {
     std::lock_guard<std::mutex> lock(thread_mutex_);
     if (thread_.joinable()) thread_.join();
@@ -22,11 +49,17 @@ void AutoFocus::trigger(Camera& camera, std::function<float()> get_metric) {
 void AutoFocus::scan_thread(Camera& camera, std::function<float()> get_metric) {
     printf("AF: starting scan\n");
 
-    auto move_and_measure = [&](int pos) -> float {
-        camera.set_focus(pos);
+    auto move_and_measure = [&](int pos, float& metric) -> bool {
+        if (!camera.set_focus(pos)) {
+            printf("AF: move failed at pos=%d\n", pos);
+            state_ = AFState::Failed;
+            locked_metric_ = 0;
+            return false;
+        }
         // Wait for actuator to settle and new frame to arrive
         std::this_thread::sleep_for(std::chrono::milliseconds(80));
-        return get_metric();
+        metric = get_metric();
+        return true;
     };
 
     // Phase 1: Coarse scan (full range, 10 steps)
@@ -40,7 +73,9 @@ void AutoFocus::scan_thread(Camera& camera, std::function<float()> get_metric) {
     for (int i = 0; i < coarse_steps; i++) {
         int pos = range_min + i * coarse_step;
         pos = std::min(pos, range_max);
-        float metric = move_and_measure(pos);
+        float metric;
+        if (!move_and_measure(pos, metric))
+            return;
         printf("AF coarse: pos=%d metric=%.1f\n", pos, metric);
         if (metric > best_metric) {
             best_metric = metric;
@@ -53,7 +88,9 @@ void AutoFocus::scan_thread(Camera& camera, std::function<float()> get_metric) {
         int fine_min = std::max(range_min, best_pos - 128);
         int fine_max = std::min(range_max, best_pos + 128);
         for (int pos = fine_min; pos <= fine_max; pos += 32) {
-            float metric = move_and_measure(pos);
+            float metric;
+            if (!move_and_measure(pos, metric))
+                return;
             printf("AF fine: pos=%d metric=%.1f\n", pos, metric);
             if (metric > best_metric) {
                 best_metric = metric;
@@ -67,7 +104,9 @@ void AutoFocus::scan_thread(Camera& camera, std::function<float()> get_metric) {
         int uf_min = std::max(range_min, best_pos - 32);
         int uf_max = std::min(range_max, best_pos + 32);
         for (int pos = uf_min; pos <= uf_max; pos += 8) {
-            float metric = move_and_measure(pos);
+            float metric;
+            if (!move_and_measure(pos, metric))
+                return;
             if (metric > best_metric) {
                 best_metric = metric;
                 best_pos = pos;
@@ -76,7 +115,12 @@ void AutoFocus::scan_thread(Camera& camera, std::function<float()> get_metric) {
     }
 
     // Move to best position
-    camera.set_focus(best_pos);
+    if (!camera.set_focus(best_pos)) {
+        printf("AF: final move failed at pos=%d\n", best_pos);
+        state_ = AFState::Failed;
+        locked_metric_ = 0;
+        return;
+    }
     best_pos_ = best_pos;
     locked_metric_ = best_metric;
 
@@ -106,13 +150,23 @@ void AutoFocus::update_continuous(Camera& camera, float metric) {
 
         for (int pos = std::max(0, cur - range);
              pos <= std::min(2047, cur + range); pos += 16) {
-            camera.set_focus(pos);
+            if (!camera.set_focus(pos)) {
+                printf("AF continuous: move failed at pos=%d\n", pos);
+                state_ = AFState::Failed;
+                locked_metric_ = 0;
+                return;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(60));
             // We don't have a metric getter here, so this is simplified
             // In practice, the pipeline's analysis callback will update
         }
 
-        camera.set_focus(best_p);
+        if (!camera.set_focus(best_p)) {
+            printf("AF continuous: restore failed at pos=%d\n", best_p);
+            state_ = AFState::Failed;
+            locked_metric_ = 0;
+            return;
+        }
         best_pos_ = best_p;
         state_ = AFState::Locked;
     }

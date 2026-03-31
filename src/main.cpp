@@ -196,11 +196,17 @@ int main(int argc, char* argv[]) {
 
         int idx = j["index"].get<int>();
 
+        af.reset();
         pipeline.stop();
         camera.stop_streaming();
 
         if (!camera.select(idx))
             return HttpResponse::error(500, "Failed to select camera");
+
+        {
+            std::lock_guard<std::mutex> lock(metric_mutex);
+            latest_focus_metric = 0;
+        }
 
         if (!pipeline.start())
             return HttpResponse::error(500, "Failed to start pipeline");
@@ -274,12 +280,18 @@ int main(int argc, char* argv[]) {
 
         if (j.contains("position")) {
             af.set_mode(AFMode::Manual);
-            camera.set_focus(j["position"].get<int>());
+            int pos = j["position"].get<int>();
+            if (!camera.set_focus(pos)) {
+                af.mark_failed();
+                return HttpResponse::error(500, "Failed to set focus");
+            }
+            af.set_manual_position(pos);
         }
         if (j.contains("mode")) {
             std::string mode = j["mode"].get<std::string>();
             if (mode == "manual") {
                 af.set_mode(AFMode::Manual);
+                af.set_manual_position(std::max(camera.get_focus(), 0));
             } else if (mode == "oneshot") {
                 af.set_mode(AFMode::OneShot);
                 af.trigger(camera, [&]() -> float {
