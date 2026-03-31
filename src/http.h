@@ -67,6 +67,7 @@ private:
     void handle_client(int fd);
     bool parse_request(int fd, HttpRequest& req);
     void send_response(int fd, const HttpResponse& resp);
+    bool serve_embedded_static(int fd, const std::string& path);
     bool serve_static(int fd, const std::string& path);
     std::string guess_content_type(const std::string& path);
 

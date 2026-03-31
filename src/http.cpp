@@ -1,4 +1,5 @@
 #include "http.h"
+#include "embedded_assets.h"
 
 #include <cstdio>
 #include <cstring>
@@ -123,11 +124,12 @@ void HttpServer::handle_client(int fd) {
         }
     }
 
-    // Try static files
-    if (req.method == "GET" && !static_dir_.empty()) {
+    // Try embedded static files first, then optional on-disk fallback.
+    if (req.method == "GET") {
         std::string file_path = req.path;
         if (file_path == "/") file_path = "/index.html";
-        if (serve_static(fd, file_path)) {
+        if (serve_embedded_static(fd, file_path) ||
+            (!static_dir_.empty() && serve_static(fd, file_path))) {
             ::close(fd);
             return;
         }
@@ -236,6 +238,23 @@ void HttpServer::send_response(int fd, const HttpResponse& resp) {
 
     std::string data = ss.str();
     send_raw(fd, data.data(), data.size());
+}
+
+bool HttpServer::serve_embedded_static(int fd, const std::string& path) {
+    if (path.find("..") != std::string::npos) return false;
+
+    const auto& assets = embedded_assets();
+    auto it = std::find_if(assets.begin(), assets.end(), [&](const EmbeddedAsset& asset) {
+        return asset.path == path;
+    });
+    if (it == assets.end()) return false;
+
+    HttpResponse resp;
+    resp.status = 200;
+    resp.content_type = guess_content_type(path);
+    resp.body.assign(reinterpret_cast<const char*>(it->data), it->size);
+    send_response(fd, resp);
+    return true;
 }
 
 bool HttpServer::serve_static(int fd, const std::string& path) {

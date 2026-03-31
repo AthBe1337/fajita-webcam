@@ -1,0 +1,61 @@
+if(NOT DEFINED STATIC_ROOT)
+    message(FATAL_ERROR "STATIC_ROOT is required")
+endif()
+
+if(NOT DEFINED OUTPUT_CPP)
+    message(FATAL_ERROR "OUTPUT_CPP is required")
+endif()
+
+if(NOT DEFINED HEADER_PATH)
+    message(FATAL_ERROR "HEADER_PATH is required")
+endif()
+
+get_filename_component(OUTPUT_DIR "${OUTPUT_CPP}" DIRECTORY)
+file(MAKE_DIRECTORY "${OUTPUT_DIR}")
+
+file(WRITE "${OUTPUT_CPP}" "#include \"embedded_assets.h\"\n\n")
+file(APPEND "${OUTPUT_CPP}" "#include <cstddef>\n")
+file(APPEND "${OUTPUT_CPP}" "#include <cstdint>\n")
+file(APPEND "${OUTPUT_CPP}" "#include <string_view>\n")
+file(APPEND "${OUTPUT_CPP}" "#include <vector>\n\n")
+file(APPEND "${OUTPUT_CPP}" "namespace {\n")
+
+file(GLOB_RECURSE ASSET_FILES RELATIVE "${STATIC_ROOT}" "${STATIC_ROOT}/*")
+list(SORT ASSET_FILES)
+
+set(ASSET_INDEX 0)
+set(ENTRY_LINES "")
+
+foreach(ASSET_RELATIVE_PATH IN LISTS ASSET_FILES)
+    set(ASSET_ABS_PATH "${STATIC_ROOT}/${ASSET_RELATIVE_PATH}")
+    if(IS_DIRECTORY "${ASSET_ABS_PATH}")
+        continue()
+    endif()
+
+    file(READ "${ASSET_ABS_PATH}" ASSET_HEX HEX)
+    string(LENGTH "${ASSET_HEX}" ASSET_HEX_LEN)
+    set(ASSET_BYTES "")
+    set(HEX_POS 0)
+    while(HEX_POS LESS ASSET_HEX_LEN)
+        string(SUBSTRING "${ASSET_HEX}" ${HEX_POS} 2 HEX_BYTE)
+        string(APPEND ASSET_BYTES "0x${HEX_BYTE},")
+        math(EXPR HEX_POS "${HEX_POS} + 2")
+    endwhile()
+
+    set(VAR_NAME "asset_${ASSET_INDEX}")
+    file(APPEND "${OUTPUT_CPP}" "const std::uint8_t ${VAR_NAME}[] = {${ASSET_BYTES}};\n")
+    string(APPEND ENTRY_LINES "    assets.push_back(EmbeddedAsset{\"/${ASSET_RELATIVE_PATH}\", ${VAR_NAME}, sizeof(${VAR_NAME})});\n")
+
+    math(EXPR ASSET_INDEX "${ASSET_INDEX} + 1")
+endforeach()
+
+file(APPEND "${OUTPUT_CPP}" "\n}  // namespace\n\n")
+file(APPEND "${OUTPUT_CPP}" "const std::vector<EmbeddedAsset>& embedded_assets() {\n")
+file(APPEND "${OUTPUT_CPP}" "    static const std::vector<EmbeddedAsset> assets = [] {\n")
+file(APPEND "${OUTPUT_CPP}" "        std::vector<EmbeddedAsset> assets;\n")
+file(APPEND "${OUTPUT_CPP}" "        assets.reserve(${ASSET_INDEX});\n")
+file(APPEND "${OUTPUT_CPP}" "${ENTRY_LINES}")
+file(APPEND "${OUTPUT_CPP}" "        return assets;\n")
+file(APPEND "${OUTPUT_CPP}" "    }();\n")
+file(APPEND "${OUTPUT_CPP}" "    return assets;\n")
+file(APPEND "${OUTPUT_CPP}" "}\n")
