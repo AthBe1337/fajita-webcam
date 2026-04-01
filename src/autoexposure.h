@@ -18,8 +18,16 @@ public:
     float target_brightness() const { return target_brightness_; }
     float current_brightness() const { return current_brightness_; }
 
+    void reset();
+
 private:
+    float compute_brightness(const uint8_t* bayer, int width, int height, BayerPattern pattern);
+
     std::atomic<bool> auto_mode_{false};
-    std::atomic<float> target_brightness_{50.0f};  // target green mean (0-255)
+    std::atomic<float> target_brightness_{80.0f};
     std::atomic<float> current_brightness_{0.0f};
+
+    float integral_ = 0.0f;
+    float prev_error_ = 0.0f;
+    int stable_count_ = 0;
 };
