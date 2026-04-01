@@ -7,7 +7,6 @@ class AutoExposure {
 public:
     AutoExposure();
 
-    // Process a frame. Call from analysis callback.
     void analyze(const uint8_t* bayer, int width, int height,
                  BayerPattern pattern, Camera& camera);
 
@@ -27,7 +26,5 @@ private:
     std::atomic<float> target_brightness_{80.0f};
     std::atomic<float> current_brightness_{0.0f};
 
-    float integral_ = 0.0f;
-    float prev_error_ = 0.0f;
-    int stable_count_ = 0;
+    float prev_brightness_ = -1.0f;
 };
