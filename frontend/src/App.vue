@@ -60,9 +60,12 @@ function onAuthenticated() {
 const flipH = ref(false)
 const flipV = ref(false)
 const zoom = ref(1)
-const gridMode = ref('none')
 const panelOpen = ref(false)
 const isMobile = ref(false)
+
+// Display settings
+const showTimestamp = ref(true)
+const timestampDark = ref(false)
 
 // Stream URL - include authenticated state so auth completion triggers reconnect
 const streamKey = computed(() =>
@@ -89,10 +92,6 @@ function toggleFlipV() { flipV.value = !flipV.value }
 function zoomIn() { zoom.value = Math.min(zoom.value + 0.25, 4) }
 function zoomOut() { zoom.value = Math.max(zoom.value - 0.25, 0.5) }
 function resetZoom() { zoom.value = 1 }
-function cycleGrid() {
-  const modes = ['none', 'thirds', 'crosshair']
-  gridMode.value = modes[(modes.indexOf(gridMode.value) + 1) % modes.length]
-}
 
 async function takeScreenshot() {
   try {
@@ -137,7 +136,6 @@ function onKeydown(e) {
     case 's': takeScreenshot(); break
     case ' ': e.preventDefault(); toggleRecord(); break
     case 'f': toggleFullscreen(); break
-    case 'g': cycleGrid(); break
     case '+': case '=': zoomIn(); break
     case '-': zoomOut(); break
     case '0': resetZoom(); break
@@ -185,7 +183,6 @@ provide('cam', cam)
           :flip-h="flipH"
           :flip-v="flipV"
           :zoom="zoom"
-          :grid-mode="gridMode"
           :status="cam.status"
           :camera="cam.currentCamera.value"
           :recording="recorder.recording.value"
@@ -193,6 +190,8 @@ provide('cam', cam)
           :connected="cam.connected.value"
           :stream-url="streamUrl"
           :stream-key="streamKey"
+          :show-timestamp="showTimestamp"
+          :timestamp-dark="timestampDark"
         />
       </div>
 
@@ -206,9 +205,13 @@ provide('cam', cam)
           :ae-auto="cam.aeAuto.value"
           :awb-auto="cam.awbAuto.value"
           :caf-on="cam.cafOn.value"
+          :show-timestamp="showTimestamp"
+          :timestamp-dark="timestampDark"
           @update:ae-auto="cam.aeAuto.value = $event"
           @update:awb-auto="cam.awbAuto.value = $event"
           @update:caf-on="cam.cafOn.value = $event"
+          @update:show-timestamp="showTimestamp = $event"
+          @update:timestamp-dark="timestampDark = $event"
         />
       </transition>
     </div>
@@ -219,7 +222,6 @@ provide('cam', cam)
       :flip-h="flipH"
       :flip-v="flipV"
       :zoom="zoom"
-      :grid-mode="gridMode"
       :recording="recorder.recording.value"
       :recording-time="recorder.recordingTime.value"
       :panel-open="panelOpen"
@@ -234,7 +236,6 @@ provide('cam', cam)
       @screenshot="takeScreenshot"
       @record="toggleRecord"
       @fullscreen="toggleFullscreen"
-      @grid="cycleGrid"
       @toggle-panel="panelOpen = !panelOpen"
     />
 
@@ -249,9 +250,13 @@ provide('cam', cam)
             :ae-auto="cam.aeAuto.value"
             :awb-auto="cam.awbAuto.value"
             :caf-on="cam.cafOn.value"
+            :show-timestamp="showTimestamp"
+            :timestamp-dark="timestampDark"
             @update:ae-auto="cam.aeAuto.value = $event"
             @update:awb-auto="cam.awbAuto.value = $event"
             @update:caf-on="cam.cafOn.value = $event"
+            @update:show-timestamp="showTimestamp = $event"
+            @update:timestamp-dark="timestampDark = $event"
           />
         </div>
       </div>
@@ -351,11 +356,22 @@ body {
 }
 .sheet {
   position: absolute; bottom: 0; left: 0; right: 0;
-  max-height: 70vh; background: var(--bg-base);
+  max-height: 85vh;
+  background: var(--bg-base);
   border-radius: 16px 16px 0 0;
-  overflow: hidden; display: flex; flex-direction: column;
+  display: flex; flex-direction: column;
+  overflow: hidden;
 }
-.sheet-handle { display: flex; justify-content: center; padding: 10px 0 6px; cursor: pointer; flex-shrink: 0; }
+.sheet-handle {
+  display: flex; justify-content: center;
+  padding: 10px 0 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  background: var(--bg-base);
+  z-index: 1;
+}
 .handle-bar { width: 36px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.2); }
 .sheet-enter-active { transition: all 0.3s ease-out; }
 .sheet-leave-active { transition: all 0.25s ease-in; }

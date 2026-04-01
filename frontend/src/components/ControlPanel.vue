@@ -8,9 +8,11 @@ const props = defineProps({
   aeAuto: Boolean,
   awbAuto: Boolean,
   cafOn: Boolean,
+  showTimestamp: { type: Boolean, default: true },
+  timestampDark: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['update:ae-auto', 'update:awb-auto', 'update:caf-on'])
+const emit = defineEmits(['update:ae-auto', 'update:awb-auto', 'update:caf-on', 'update:show-timestamp', 'update:timestamp-dark'])
 
 function debounce(fn, ms) {
   let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms) }
@@ -212,6 +214,18 @@ const stJpegEnc = computed(() => props.status?.timing?.jpeg_ms?.toFixed(1) || '-
       </button>
       <transition name="collapse">
         <div v-show="openSections.stream" class="card-body">
+          <div class="switch-row">
+            <span class="switch" :class="{ on: showTimestamp }" @click="emit('update:show-timestamp', !showTimestamp)">
+              <span class="switch-thumb"></span>
+            </span>
+            <label>Timestamp</label>
+          </div>
+          <div v-if="showTimestamp" class="switch-row">
+            <span class="switch" :class="{ on: timestampDark }" @click="emit('update:timestamp-dark', !timestampDark)">
+              <span class="switch-thumb"></span>
+            </span>
+            <label>Dark Text</label>
+          </div>
           <div class="slider-row">
             <label>Quality</label>
             <input type="range" min="10" max="100" :value="quality" @input="onQuality(+$event.target.value)">
