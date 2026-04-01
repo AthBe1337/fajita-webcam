@@ -2,6 +2,8 @@
 #include <cstdint>
 #include "camera.h"
 
+class ThreadPool;
+
 // MIPI 10-bit packed unpack + white balance + optional downsample
 // Output: 8-bit bayer (same pattern, possibly smaller)
 //
@@ -12,13 +14,15 @@ void isp_unpack_wb(const uint8_t* mipi_in, uint8_t* bayer_out,
                    int width, int height, int stride,
                    int downsample,
                    float r_gain, float b_gain,
-                   BayerPattern pattern);
+                   BayerPattern pattern,
+                   ThreadPool* pool = nullptr);
 
 // Bayer demosaic to RGB888 (bilinear interpolation)
 // Input: 8-bit bayer (width x height)
 // Output: RGB888 (width x height x 3)
 void isp_demosaic(const uint8_t* bayer, uint8_t* rgb,
-                  int width, int height, BayerPattern pattern);
+                  int width, int height, BayerPattern pattern,
+                  ThreadPool* pool = nullptr);
 
 // Compute channel statistics from raw bayer for AWB/AE
 struct ChannelStats {

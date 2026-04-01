@@ -224,6 +224,10 @@ int main(int argc, char* argv[]) {
             {"streaming", pipeline.is_running()},
             {"fps", pipeline.current_fps()},
             {"jpeg_size", pipeline.last_jpeg_size()},
+            {"timing", {
+                {"isp_ms", pipeline.time_unpack()},
+                {"jpeg_ms", pipeline.time_jpeg()},
+            }},
             {"downsample", pcfg.downsample},
             {"jpeg_quality", pcfg.jpeg_quality},
             {"exposure", camera.get_exposure()},

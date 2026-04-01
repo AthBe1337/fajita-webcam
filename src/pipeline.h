@@ -1,10 +1,15 @@
 #pragma once
 #include "camera.h"
 #include "stream.h"
+#include "threadpool.h"
+#if HAS_GPU_ISP
+#include "gpu_isp.h"
+#endif
 #include <atomic>
 #include <mutex>
 #include <thread>
 #include <functional>
+#include <condition_variable>
 
 // Callback for frame analysis (AWB/AE/AF)
 struct AnalysisFrame {
@@ -43,12 +48,14 @@ public:
 
 private:
     void capture_loop();
+    void analysis_loop();
     void encode_jpeg(const uint8_t* rgb, int width, int height,
                      int quality, std::vector<uint8_t>& out);
 
     Camera& camera_;
     MjpegStream& stream_;
     std::thread thread_;
+    std::thread analysis_thread_;
     std::atomic<bool> running_{false};
 
     mutable std::mutex config_mutex_;
@@ -57,6 +64,35 @@ private:
     AnalysisCallback analysis_cb_;
     int analysis_interval_ = 5;
 
+    // Thread pool for parallel ISP processing (CPU fallback)
+    ThreadPool isp_pool_;
+
+#if HAS_GPU_ISP
+    // GPU-accelerated ISP (preferred when available)
+    GpuIsp gpu_isp_;
+    bool gpu_configured_ = false;
+#endif
+
+    // Async analysis: capture thread copies bayer data here, analysis thread
+    // picks it up without blocking capture.
+    std::mutex analysis_mutex_;
+    std::condition_variable analysis_cv_;
+    std::vector<uint8_t> analysis_bayer_buf_;
+    int analysis_width_ = 0;
+    int analysis_height_ = 0;
+    BayerPattern analysis_pattern_ = BayerPattern::RGGB;
+    bool analysis_ready_ = false;
+
     std::atomic<float> fps_{0};
     std::atomic<size_t> last_jpeg_size_{0};
+
+    // Per-stage timing (ms), updated once per second
+    std::atomic<float> time_unpack_ms_{0};
+    std::atomic<float> time_demosaic_ms_{0};
+    std::atomic<float> time_jpeg_ms_{0};
+
+public:
+    float time_unpack() const { return time_unpack_ms_; }
+    float time_demosaic() const { return time_demosaic_ms_; }
+    float time_jpeg() const { return time_jpeg_ms_; }
 };

@@ -2,6 +2,7 @@
 #include "isp.h"
 
 #include <cstdio>
+#include <cstring>
 #include <chrono>
 #include <algorithm>
 #include <vector>
@@ -80,15 +81,56 @@ bool Pipeline::start() {
         if (!camera_.start_streaming())
             return false;
     }
+#if HAS_GPU_ISP
+    if (!gpu_isp_.is_available()) {
+        if (gpu_isp_.init())
+            printf("Pipeline: GPU ISP available\n");
+        else
+            printf("Pipeline: GPU ISP not available, using CPU\n");
+    }
+    gpu_configured_ = false;
+#endif
     running_ = true;
     thread_ = std::thread(&Pipeline::capture_loop, this);
+    if (analysis_cb_)
+        analysis_thread_ = std::thread(&Pipeline::analysis_loop, this);
     return true;
 }
 
 void Pipeline::stop() {
     running_ = false;
+    analysis_cv_.notify_all();
     if (thread_.joinable())
         thread_.join();
+    if (analysis_thread_.joinable())
+        analysis_thread_.join();
+}
+
+void Pipeline::analysis_loop() {
+    std::vector<uint8_t> local_bayer;
+    int w, h;
+    BayerPattern pat;
+
+    while (running_) {
+        {
+            std::unique_lock<std::mutex> lock(analysis_mutex_);
+            analysis_cv_.wait(lock, [&]{ return analysis_ready_ || !running_; });
+            if (!running_) break;
+            local_bayer.resize(analysis_bayer_buf_.size());
+            std::memcpy(local_bayer.data(), analysis_bayer_buf_.data(), analysis_bayer_buf_.size());
+            w = analysis_width_;
+            h = analysis_height_;
+            pat = analysis_pattern_;
+            analysis_ready_ = false;
+        }
+
+        AnalysisFrame af;
+        af.bayer = local_bayer.data();
+        af.width = w;
+        af.height = h;
+        af.pattern = pat;
+        analysis_cb_(af);
+    }
 }
 
 void Pipeline::encode_jpeg(const uint8_t* rgb, int width, int height,
@@ -110,10 +152,16 @@ void Pipeline::encode_jpeg(const uint8_t* rgb, int width, int height,
     jpeg_set_quality(&cinfo, quality, TRUE);
 
     jpeg_start_compress(&cinfo, TRUE);
+
+    // Batch scanlines for better throughput
+    constexpr int BATCH = 8;
+    JSAMPROW rows[BATCH];
     while (cinfo.next_scanline < cinfo.image_height) {
-        const uint8_t* row = rgb + cinfo.next_scanline * width * 3;
-        JSAMPROW row_ptr = const_cast<uint8_t*>(row);
-        jpeg_write_scanlines(&cinfo, &row_ptr, 1);
+        int remaining = cinfo.image_height - cinfo.next_scanline;
+        int n = std::min(remaining, BATCH);
+        for (int i = 0; i < n; i++)
+            rows[i] = const_cast<uint8_t*>(rgb + (cinfo.next_scanline + i) * width * 3);
+        jpeg_write_scanlines(&cinfo, rows, n);
     }
     jpeg_finish_compress(&cinfo);
 
@@ -128,6 +176,18 @@ void Pipeline::capture_loop() {
     int frame_count = 0;
     auto fps_start = std::chrono::steady_clock::now();
     int fps_frames = 0;
+
+    // Per-stage timing accumulators
+    using Clock = std::chrono::steady_clock;
+    float acc_unpack = 0, acc_demosaic = 0, acc_jpeg = 0;
+    int timing_frames = 0;
+
+    // Pre-allocated buffers — reused across frames to avoid per-frame heap allocation
+    std::vector<uint8_t> bayer;
+    std::vector<uint8_t> rgb;
+    std::vector<uint8_t> jpeg;
+    std::vector<uint8_t> collapsed_bayer;
+    std::vector<uint8_t> collapsed_rgb;
 
     while (running_) {
         auto cfg = get_config();
@@ -155,46 +215,93 @@ void Pipeline::capture_loop() {
         int out_w = cam_cfg->width / ds;
         int out_h = cam_cfg->height / ds;
 
-        std::vector<uint8_t> bayer;
-        std::vector<uint8_t> rgb;
+        auto t0 = Clock::now();
 
-        if (cam_cfg->cfa_block == 2) {
+        bool used_gpu = false;
+#if HAS_GPU_ISP
+        // GPU fast path: handles standard (non-quad-Bayer) sensors
+        if (gpu_isp_.is_available() && cam_cfg->cfa_block != 2) {
+            if (!gpu_configured_ ||
+                gpu_isp_.output_width() != cam_cfg->width / ds ||
+                gpu_isp_.output_height() != cam_cfg->height / ds) {
+                gpu_configured_ = gpu_isp_.configure(
+                    cam_cfg->width, cam_cfg->height, cam_cfg->stride,
+                    ds, cam_cfg->bayer);
+            }
+
+            if (gpu_configured_) {
+                int out_sz = (cam_cfg->width / ds) * (cam_cfg->height / ds);
+                rgb.resize(out_sz * 3);
+
+                used_gpu = gpu_isp_.process(
+                    raw_frame.data, raw_frame.length,
+                    cfg.r_gain, cfg.b_gain,
+                    rgb.data());
+
+                if (used_gpu) {
+                    // Analysis: need bayer data for AWB/AE/AF (CPU unpack a subset)
+                    if (analysis_cb_ && (frame_count % analysis_interval_ == 0)) {
+                        bayer.resize(out_w * out_h);
+                        isp_unpack_wb(raw_frame.data, bayer.data(),
+                                      cam_cfg->width, cam_cfg->height, cam_cfg->stride,
+                                      ds, cfg.r_gain, cfg.b_gain, cam_cfg->bayer);
+                        std::lock_guard<std::mutex> lock(analysis_mutex_);
+                        size_t sz = out_w * out_h;
+                        analysis_bayer_buf_.resize(sz);
+                        std::memcpy(analysis_bayer_buf_.data(), bayer.data(), sz);
+                        analysis_width_ = out_w;
+                        analysis_height_ = out_h;
+                        analysis_pattern_ = cam_cfg->bayer;
+                        analysis_ready_ = true;
+                        analysis_cv_.notify_one();
+                    }
+                    camera_.release_frame(raw_frame);
+                }
+            }
+        }
+#endif
+
+        if (!used_gpu && cam_cfg->cfa_block == 2) {
             // IMX371 behaves like a 2x2 same-color mosaic. First collapse it to a
             // conventional Bayer grid at half linear resolution, then apply any
             // additional downsampling on that regular Bayer image.
             int collapsed_w = cam_cfg->width / 2;
             int collapsed_h = cam_cfg->height / 2;
-            std::vector<uint8_t> collapsed_bayer(collapsed_w * collapsed_h);
+            collapsed_bayer.resize(collapsed_w * collapsed_h);
 
             isp_unpack_wb(raw_frame.data, collapsed_bayer.data(),
                           cam_cfg->width, cam_cfg->height, cam_cfg->stride,
-                          2, cfg.r_gain, cfg.b_gain, cam_cfg->bayer);
+                          2, cfg.r_gain, cfg.b_gain, cam_cfg->bayer, &isp_pool_);
 
             const uint8_t* analysis_bayer = collapsed_bayer.data();
             int analysis_w = collapsed_w;
             int analysis_h = collapsed_h;
 
             if (ds == 1) {
-                std::vector<uint8_t> collapsed_rgb(collapsed_w * collapsed_h * 3);
+                collapsed_rgb.resize(collapsed_w * collapsed_h * 3);
                 rgb.resize(out_w * out_h * 3);
 
                 if (analysis_cb_ && (frame_count % analysis_interval_ == 0)) {
-                    AnalysisFrame af;
-                    af.bayer = analysis_bayer;
-                    af.width = analysis_w;
-                    af.height = analysis_h;
-                    af.pattern = cam_cfg->bayer;
-                    analysis_cb_(af);
+                    std::lock_guard<std::mutex> lock(analysis_mutex_);
+                    size_t sz = analysis_w * analysis_h;
+                    analysis_bayer_buf_.resize(sz);
+                    std::memcpy(analysis_bayer_buf_.data(), analysis_bayer, sz);
+                    analysis_width_ = analysis_w;
+                    analysis_height_ = analysis_h;
+                    analysis_pattern_ = cam_cfg->bayer;
+                    analysis_ready_ = true;
+                    analysis_cv_.notify_one();
                 }
 
                 camera_.release_frame(raw_frame);
 
                 isp_demosaic(collapsed_bayer.data(), collapsed_rgb.data(),
-                             collapsed_w, collapsed_h, cam_cfg->bayer);
+                             collapsed_w, collapsed_h, cam_cfg->bayer, &isp_pool_);
                 upsample_rgb_2x(collapsed_rgb.data(), rgb.data(), collapsed_w, collapsed_h);
             } else {
                 if (ds == 2) {
-                    bayer = std::move(collapsed_bayer);
+                    bayer.resize(collapsed_bayer.size());
+                    std::memcpy(bayer.data(), collapsed_bayer.data(), collapsed_bayer.size());
                     analysis_bayer = bayer.data();
                 } else {
                     bayer.resize(out_w * out_h);
@@ -208,52 +315,67 @@ void Pipeline::capture_loop() {
                 rgb.resize(out_w * out_h * 3);
 
                 if (analysis_cb_ && (frame_count % analysis_interval_ == 0)) {
-                    AnalysisFrame af;
-                    af.bayer = analysis_bayer;
-                    af.width = analysis_w;
-                    af.height = analysis_h;
-                    af.pattern = cam_cfg->bayer;
-                    analysis_cb_(af);
+                    std::lock_guard<std::mutex> lock(analysis_mutex_);
+                    size_t sz = analysis_w * analysis_h;
+                    analysis_bayer_buf_.resize(sz);
+                    std::memcpy(analysis_bayer_buf_.data(), analysis_bayer, sz);
+                    analysis_width_ = analysis_w;
+                    analysis_height_ = analysis_h;
+                    analysis_pattern_ = cam_cfg->bayer;
+                    analysis_ready_ = true;
+                    analysis_cv_.notify_one();
                 }
 
                 camera_.release_frame(raw_frame);
 
-                isp_demosaic(bayer.data(), rgb.data(), out_w, out_h, cam_cfg->bayer);
+                isp_demosaic(bayer.data(), rgb.data(), out_w, out_h, cam_cfg->bayer, &isp_pool_);
             }
-        } else {
-            // Allocate working buffers (reuse across frames would be better,
-            // but keeping it simple for now)
+        } else if (!used_gpu) {
             bayer.resize(out_w * out_h);
             rgb.resize(out_w * out_h * 3);
 
             // Unpack MIPI 10-bit + apply WB gains + downsample
             isp_unpack_wb(raw_frame.data, bayer.data(),
                           cam_cfg->width, cam_cfg->height, cam_cfg->stride,
-                          ds, cfg.r_gain, cfg.b_gain, cam_cfg->bayer);
+                          ds, cfg.r_gain, cfg.b_gain, cam_cfg->bayer, &isp_pool_);
 
-            // Analysis callback (AWB/AE/AF)
+            // Analysis callback (AWB/AE/AF) — async handoff
             if (analysis_cb_ && (frame_count % analysis_interval_ == 0)) {
-                AnalysisFrame af;
-                af.bayer = bayer.data();
-                af.width = out_w;
-                af.height = out_h;
-                af.pattern = cam_cfg->bayer;
-                analysis_cb_(af);
+                std::lock_guard<std::mutex> lock(analysis_mutex_);
+                size_t sz = out_w * out_h;
+                analysis_bayer_buf_.resize(sz);
+                std::memcpy(analysis_bayer_buf_.data(), bayer.data(), sz);
+                analysis_width_ = out_w;
+                analysis_height_ = out_h;
+                analysis_pattern_ = cam_cfg->bayer;
+                analysis_ready_ = true;
+                analysis_cv_.notify_one();
             }
 
             camera_.release_frame(raw_frame);
 
             // Demosaic
-            isp_demosaic(bayer.data(), rgb.data(), out_w, out_h, cam_cfg->bayer);
+            isp_demosaic(bayer.data(), rgb.data(), out_w, out_h, cam_cfg->bayer, &isp_pool_);
         }
 
+        auto t1 = Clock::now(); // end of ISP (unpack+demosaic)
+
         // JPEG encode
-        std::vector<uint8_t> jpeg;
         encode_jpeg(rgb.data(), out_w, out_h, cfg.jpeg_quality, jpeg);
         last_jpeg_size_ = jpeg.size();
 
+        auto t2 = Clock::now(); // end of JPEG
+
         // Push to MJPEG stream
         stream_.push_frame(jpeg.data(), jpeg.size());
+
+        // Per-stage timing accumulation
+        auto ms = [](auto a, auto b) {
+            return std::chrono::duration<float, std::milli>(b - a).count();
+        };
+        acc_unpack += ms(t0, t1);    // ISP total (unpack + demosaic)
+        acc_jpeg += ms(t1, t2);      // JPEG encode
+        timing_frames++;
 
         // FPS calculation
         fps_frames++;
@@ -261,8 +383,16 @@ void Pipeline::capture_loop() {
         auto elapsed = std::chrono::duration<float>(now - fps_start).count();
         if (elapsed >= 1.0f) {
             fps_ = fps_frames / elapsed;
+            if (timing_frames > 0) {
+                time_unpack_ms_ = acc_unpack / timing_frames;
+                time_jpeg_ms_ = acc_jpeg / timing_frames;
+                printf("  ISP: %.1fms  JPEG: %.1fms  (%.1f fps)\n",
+                       time_unpack_ms_.load(), time_jpeg_ms_.load(), fps_.load());
+            }
             fps_frames = 0;
             fps_start = now;
+            acc_unpack = acc_demosaic = acc_jpeg = 0;
+            timing_frames = 0;
         }
 
         // Frame rate limiting

@@ -8,6 +8,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Threads REQUIRED)
 find_package(JPEG REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(EGL IMPORTED_TARGET egl)
+pkg_check_modules(GLESV2 IMPORTED_TARGET glesv2)
+pkg_check_modules(GBM IMPORTED_TARGET gbm)
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
     add_compile_options(-march=armv8-a+simd)
@@ -33,7 +37,7 @@ add_custom_command(
     COMMENT "Embedding static web assets"
 )
 
-add_executable(fajita-webcam
+set(SOURCES
     src/autoexposure.cpp
     src/autofocus.cpp
     src/autowhitebalance.cpp
@@ -46,6 +50,17 @@ add_executable(fajita-webcam
     ${EMBEDDED_ASSETS_CPP}
 )
 
+if(EGL_FOUND AND GLESV2_FOUND AND GBM_FOUND)
+    list(APPEND SOURCES src/gpu_isp.cpp)
+    add_definitions(-DHAS_GPU_ISP=1)
+    message(STATUS "GPU ISP enabled (EGL + GLES + GBM found)")
+else()
+    add_definitions(-DHAS_GPU_ISP=0)
+    message(STATUS "GPU ISP disabled (missing EGL/GLES/GBM)")
+endif()
+
+add_executable(fajita-webcam ${SOURCES})
+
 target_include_directories(fajita-webcam PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
@@ -56,3 +71,11 @@ target_link_libraries(fajita-webcam PRIVATE
     JPEG::JPEG
     Threads::Threads
 )
+
+if(EGL_FOUND AND GLESV2_FOUND AND GBM_FOUND)
+    target_link_libraries(fajita-webcam PRIVATE
+        PkgConfig::EGL
+        PkgConfig::GLESV2
+        PkgConfig::GBM
+    )
+endif()
