@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 
 const props = defineProps({
   flipH: { type: Boolean, default: false },
@@ -11,34 +11,67 @@ const props = defineProps({
   recording: { type: Boolean, default: false },
   recordingTime: { type: Number, default: 0 },
   connected: { type: Boolean, default: true },
+  streamUrl: { type: String, default: '' },
+  streamKey: { type: String, default: '' },
 })
 
 const imgEl = ref(null)
-const streamSrc = ref('/stream/mjpeg?' + Date.now())
-
 defineExpose({ imgEl })
 
-function reloadStream() {
-  streamSrc.value = ''
-  setTimeout(() => { streamSrc.value = '/stream/mjpeg?' + Date.now() }, 300)
-}
+// Track last streamKey to detect when to force reconnect
+let lastStreamKey = ''
 
-// Reload stream when camera or downsample changes
-watch(() => props.camera, reloadStream)
-watch(() => props.status?.downsample, reloadStream)
+// Update stream when URL or key changes - use flush: 'post' to ensure DOM is ready
+watch([() => props.streamUrl, () => props.streamKey], ([url, key]) => {
+  if (!url || !imgEl.value) return
 
-// Reload stream when backend reconnects
-let wasConnected = true
-watch(() => props.connected, (now) => {
-  if (now && !wasConnected) {
-    reloadStream()
+  if (key !== lastStreamKey) {
+    // Key changed (auth, camera, rotation) - reconnect stream
+    lastStreamKey = key || ''
+    imgEl.value.src = ''
+    // Small delay ensures browser clears previous connection
+    setTimeout(() => {
+      if (imgEl.value) imgEl.value.src = url
+    }, 50)
   }
-  wasConnected = now
+}, { flush: 'post' })
+
+// Initial load on mount
+onMounted(() => {
+  if (props.streamUrl && imgEl.value) {
+    lastStreamKey = props.streamKey || ''
+    imgEl.value.src = props.streamUrl
+  }
 })
 
-// Also handle img load error (auto-retry on failure)
+// Handle actual connection loss (not transient errors)
+let errorCount = 0
+let retryTimer = null
+
 function onImgError() {
-  setTimeout(reloadStream, 1000)
+  // MJPEG streams can have transient errors; only retry after multiple failures
+  errorCount++
+  if (errorCount >= 3 && !retryTimer) {
+    retryTimer = setTimeout(() => {
+      retryTimer = null
+      errorCount = 0
+      // Force reconnect
+      if (imgEl.value && props.streamUrl) {
+        imgEl.value.src = ''
+        setTimeout(() => {
+          if (imgEl.value) imgEl.value.src = props.streamUrl
+        }, 50)
+      }
+    }, 2000)
+  }
+}
+
+function onImgLoad() {
+  errorCount = 0
+  if (retryTimer) {
+    clearTimeout(retryTimer)
+    retryTimer = null
+  }
 }
 
 // Only flip/zoom (rotation is server-side)
@@ -76,12 +109,13 @@ const recordTime = computed(() => {
   <div class="video-view">
     <img
       ref="imgEl"
-      :src="streamSrc"
+      :src="streamUrl"
       alt="Camera stream"
       class="stream"
       :style="{ transform }"
       draggable="false"
       @error="onImgError"
+      @load="onImgLoad"
     >
 
     <!-- Grid overlays -->
@@ -117,10 +151,9 @@ const recordTime = computed(() => {
   flex: 1; display: flex; align-items: center; justify-content: center;
   position: relative; overflow: hidden; min-height: 0;
 }
-/* Fix: always fill container while maintaining aspect ratio */
 .stream {
   width: 100%; height: 100%;
-  object-fit: contain;  /* Never stretch, always maintain ratio */
+  object-fit: contain;
   transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
   user-select: none; -webkit-user-drag: none;
 }

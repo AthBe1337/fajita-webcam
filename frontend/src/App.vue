@@ -2,13 +2,59 @@
 import { ref, computed, provide, onMounted, onUnmounted, watch } from 'vue'
 import { useCamera } from './composables/useCamera.js'
 import { useRecorder } from './composables/useRecorder.js'
+import { checkAuth, needsAuth, hasSecret, getStreamUrl, restoreSecret, verifySecret, onAuthError, clearSecret, computeToken, streamNeedsAuth } from './api.js'
 import VideoView from './components/VideoView.vue'
 import Toolbar from './components/Toolbar.vue'
 import ControlPanel from './components/ControlPanel.vue'
+import AuthPrompt from './components/AuthPrompt.vue'
 
 const cam = useCamera()
 const videoRef = ref(null)
 const recorder = useRecorder()
+
+// Auth state
+const authChecked = ref(false)
+const authenticated = ref(false)
+const showAuthPrompt = ref(false)
+
+onMounted(async () => {
+  // Register global 401 handler
+  onAuthError(() => {
+    authenticated.value = false
+    showAuthPrompt.value = true
+    cam.stop()
+  })
+
+  await checkAuth()
+  authChecked.value = true
+
+  if (needsAuth.value) {
+    // Try restoring secret from sessionStorage
+    if (restoreSecret()) {
+      const result = await verifySecret(sessionStorage.getItem('fajita_secret'))
+      if (result.ok) {
+        authenticated.value = true
+        cam.start()
+        return
+      }
+    }
+    showAuthPrompt.value = true
+  } else {
+    authenticated.value = true
+    cam.start()
+  }
+})
+
+onUnmounted(() => {
+  cam.stop()
+})
+
+function onAuthenticated() {
+  showAuthPrompt.value = false
+  authenticated.value = true
+  // Start camera polling after auth is confirmed
+  cam.start()
+}
 
 // Client-side transforms (flip/zoom only, rotation is server-side)
 const flipH = ref(false)
@@ -17,6 +63,12 @@ const zoom = ref(1)
 const gridMode = ref('none')
 const panelOpen = ref(false)
 const isMobile = ref(false)
+
+// Stream URL - include authenticated state so auth completion triggers reconnect
+const streamKey = computed(() =>
+  `${authenticated.value}-${cam.currentIndex.value}-${cam.status.downsample}-${cam.status.rotation}`
+)
+const streamUrl = computed(() => authenticated.value ? getStreamUrl() : '')
 
 function checkMobile() { isMobile.value = window.innerWidth < 768 }
 onMounted(() => { checkMobile(); window.addEventListener('resize', checkMobile) })
@@ -44,16 +96,21 @@ function cycleGrid() {
 
 async function takeScreenshot() {
   try {
-    const r = await fetch('/snapshot')
+    let url = '/snapshot'
+    // snapshot always needs auth when auth is enabled (independent of stream auth)
+    if (needsAuth.value) {
+      url += `?token=${computeToken()}`
+    }
+    const r = await fetch(url)
     const blob = await r.blob()
-    const url = URL.createObjectURL(blob)
+    const objectUrl = URL.createObjectURL(blob)
     const a = document.createElement('a')
-    a.href = url
+    a.href = objectUrl
     const d = new Date()
     const ts = `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
     a.download = `fajita-${ts}.jpg`
     a.click()
-    URL.revokeObjectURL(url)
+    URL.revokeObjectURL(objectUrl)
   } catch { /* ignore */ }
 }
 function p(n) { return n.toString().padStart(2, '0') }
@@ -93,7 +150,12 @@ provide('cam', cam)
 
 <template>
   <div class="app" @keydown="onKeydown" tabindex="0">
-    <!-- Header -->
+    <!-- Auth prompt if needed -->
+    <AuthPrompt v-if="showAuthPrompt" @authenticated="onAuthenticated" />
+
+    <!-- Main UI only after auth -->
+    <template v-else-if="authChecked && authenticated">
+      <!-- Header -->
     <header class="header">
       <div class="header-left">
         <div class="logo">
@@ -129,6 +191,8 @@ provide('cam', cam)
           :recording="recorder.recording.value"
           :recording-time="recorder.recordingTime.value"
           :connected="cam.connected.value"
+          :stream-url="streamUrl"
+          :stream-key="streamKey"
         />
       </div>
 
@@ -192,6 +256,12 @@ provide('cam', cam)
         </div>
       </div>
     </transition>
+    </template>
+
+    <!-- Loading state while checking auth -->
+    <div v-else-if="!authChecked" class="loading-state">
+      <div class="spinner"></div>
+    </div>
   </div>
 </template>
 
@@ -291,6 +361,22 @@ body {
 .sheet-leave-active { transition: all 0.25s ease-in; }
 .sheet-enter-from .sheet, .sheet-leave-to .sheet { transform: translateY(100%); }
 .sheet-enter-from, .sheet-leave-to { background: rgba(0, 0, 0, 0); }
+
+.loading-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border-light);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 767px) {
   .header { padding: 8px 12px; }

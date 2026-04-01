@@ -8,6 +8,7 @@
 #include "autofocus.h"
 #include "logging.h"
 #include "args.h"
+#include "sha256.h"
 #include "json.hpp"
 
 #include <cstdio>
@@ -101,6 +102,9 @@ int main(int argc, char* argv[]) {
     bool no_awb = args.has_flag("--no-awb", nullptr);
     bool no_ae = args.has_flag("--no-ae", nullptr);
     bool no_af = args.has_flag("--no-af", nullptr);
+    bool auth_no_stream = args.has_flag("--auth-no-stream", nullptr);
+    bool enable_auth = args.has_flag("--auth", nullptr) || auth_no_stream;
+    std::string secret = args.get_string("--secret", nullptr, "");
 
     // Set log level (case-insensitive)
     std::string level = log_level_str;
@@ -111,8 +115,19 @@ int main(int argc, char* argv[]) {
     else if (level == "error" || level == "err") g_log_level = LogLevel::ERROR;
 
     LOG_INFO("fajita-webcam starting...");
-    LOG_DEBUG("Options: port=%d, camera=%d, quality=%d, downsample=%d, fps=%d",
-              port, camera_idx, jpeg_quality, downsample, target_fps);
+    LOG_DEBUG("Options: port=%d, camera=%d, quality=%d, downsample=%d, fps=%d, auth=%d, auth_stream=%d",
+              port, camera_idx, jpeg_quality, downsample, target_fps, enable_auth, enable_auth && !auth_no_stream);
+
+    // Generate secret if auth enabled but no secret provided
+    if (enable_auth && secret.empty()) {
+        secret = sha256::random_hex(16);
+        LOG_INFO("Auth enabled. Generated secret: %s", secret.c_str());
+    } else if (enable_auth) {
+        LOG_INFO("Auth enabled with provided secret");
+    }
+    if (enable_auth && auth_no_stream) {
+        LOG_INFO("Stream authentication disabled (--auth-no-stream)");
+    }
 
     // Initialize camera
     Camera camera;
@@ -195,6 +210,10 @@ int main(int argc, char* argv[]) {
     // HTTP server
     HttpServer http;
     http.set_static_dir(find_static_dir(argv[0]));
+    if (enable_auth) {
+        http.set_secret(secret);
+        http.set_auth_stream(!auth_no_stream);
+    }
 
     // ============ API Routes ============
 

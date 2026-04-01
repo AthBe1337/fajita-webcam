@@ -1,6 +1,8 @@
 #include "http.h"
 #include "embedded_assets.h"
 #include "logging.h"
+#include "sha256.h"
+#include "json.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -16,6 +18,9 @@
 #include <algorithm>
 #include <fstream>
 #include <sstream>
+#include <ctime>
+
+using json = nlohmann::json;
 
 HttpServer::HttpServer() {}
 
@@ -28,6 +33,54 @@ void HttpServer::route(const std::string& method, const std::string& path,
 
 void HttpServer::stream_route(const std::string& path, StreamHandler handler) {
     stream_routes_.push_back({path, std::move(handler)});
+}
+
+// Check if path needs authentication
+bool HttpServer::needs_auth(const std::string& path) const {
+    if (!auth_enabled_) return false;
+
+    // Static files don't need auth
+    if (path == "/" || path == "/index.html") return false;
+    if (path.find("/assets/") == 0) return false;
+
+    // Auth endpoints are always accessible
+    if (path == "/api/auth-info" || path == "/api/auth/verify") return false;
+
+    // Stream needs auth if auth_stream_ is true
+    if (path == "/stream/mjpeg") return auth_stream_;
+
+    // All other /api/* and /snapshot need auth
+    if (path.find("/api/") == 0 || path == "/snapshot") return true;
+
+    // Other static files don't need auth
+    return false;
+}
+
+// Extract token from request (header or query param)
+std::string HttpServer::get_token(const HttpRequest& req) const {
+    // Check Authorization header: "Bearer <token>"
+    std::string auth_header = req.header("authorization");
+    if (auth_header.find("Bearer ") == 0) {
+        return auth_header.substr(7);
+    }
+
+    // Check query parameter: ?token=<token>
+    std::string token = req.query_param("token");
+    if (!token.empty()) {
+        return token;
+    }
+
+    return "";
+}
+
+// Validate token using SHA256(secret + timestamp)
+bool HttpServer::validate_token(const HttpRequest& req) const {
+    std::string token = get_token(req);
+    if (token.empty()) return false;
+
+    // Get current time and check ±1 window (5 min each)
+    uint64_t now = (uint64_t)std::time(nullptr);
+    return sha256::validate_token(secret_, token, now);
 }
 
 bool HttpServer::start(int port) {
@@ -144,6 +197,42 @@ void HttpServer::handle_client(int fd, const std::string& client_ip) {
     }
 
     int response_status = 200;
+
+    // Handle /api/auth-info specially (always accessible)
+    if (req.path == "/api/auth-info" && req.method == "GET") {
+        json j = {{"require_auth", auth_enabled_}};
+        if (auth_enabled_) {
+            j["auth_stream"] = auth_stream_;
+        }
+        send_response(fd, HttpResponse::json(j.dump()));
+        LOG_INFO("HTTP %s %s %s %d", client_ip.c_str(), req.method.c_str(), req.path.c_str(), 200);
+        cleanup();
+        return;
+    }
+
+    // Handle /api/auth/verify (always accessible, validates token)
+    if (req.path == "/api/auth/verify" && req.method == "POST") {
+        if (!auth_enabled_) {
+            send_response(fd, HttpResponse::json(R"({"ok": true, "message": "Auth not required"})"));
+        } else if (validate_token(req)) {
+            send_response(fd, HttpResponse::json(R"({"ok": true})"));
+        } else {
+            send_response(fd, HttpResponse::error(401, R"({"ok": false, "error": "Invalid secret"})"));
+        }
+        LOG_INFO("HTTP %s %s %s %d", client_ip.c_str(), req.method.c_str(), req.path.c_str(),
+                 (!auth_enabled_ || validate_token(req)) ? 200 : 401);
+        cleanup();
+        return;
+    }
+
+    // Check authentication for protected routes
+    if (needs_auth(req.path) && !validate_token(req)) {
+        response_status = 401;
+        send_response(fd, HttpResponse::error(401, R"({"error": "Unauthorized", "require_auth": true})"));
+        LOG_INFO("HTTP %s %s %s %d", client_ip.c_str(), req.method.c_str(), req.path.c_str(), response_status);
+        cleanup();
+        return;
+    }
 
     // Check stream routes first
     for (auto& sr : stream_routes_) {
@@ -290,6 +379,7 @@ void HttpServer::send_response(int fd, const HttpResponse& resp) {
     ss << "HTTP/1.1 " << resp.status << " ";
     switch (resp.status) {
     case 200: ss << "OK"; break;
+    case 401: ss << "Unauthorized"; break;
     case 400: ss << "Bad Request"; break;
     case 404: ss << "Not Found"; break;
     case 500: ss << "Internal Server Error"; break;

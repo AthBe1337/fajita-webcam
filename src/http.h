@@ -20,6 +20,27 @@ struct HttpRequest {
         auto it = headers.find(key);
         return it != headers.end() ? it->second : "";
     }
+
+    // Get query parameter value
+    std::string query_param(const std::string& key) const {
+        std::string q = query;
+        while (!q.empty()) {
+            size_t eq = q.find('=');
+            if (eq == std::string::npos) break;
+            std::string k = q.substr(0, eq);
+            size_t amp = q.find('&');
+            std::string v;
+            if (amp == std::string::npos) {
+                v = q.substr(eq + 1);
+                q.clear();
+            } else {
+                v = q.substr(eq + 1, amp - eq - 1);
+                q = q.substr(amp + 1);
+            }
+            if (k == key) return v;
+        }
+        return "";
+    }
 };
 
 struct HttpResponse {
@@ -57,6 +78,14 @@ public:
     // Serve static files from a directory
     void set_static_dir(const std::string& dir) { static_dir_ = dir; }
 
+    // Authentication settings
+    void set_secret(const std::string& secret) {
+        secret_ = secret;
+        auth_enabled_ = !secret.empty();
+    }
+    void set_auth_stream(bool enable) { auth_stream_ = enable; }
+    bool auth_enabled() const { return auth_enabled_; }
+
     bool start(int port);
     void stop();
 
@@ -77,6 +106,11 @@ private:
     void unregister_client_fd(int fd);
     void join_client_threads();
 
+    // Auth validation
+    bool needs_auth(const std::string& path) const;
+    bool validate_token(const HttpRequest& req) const;
+    std::string get_token(const HttpRequest& req) const;
+
     struct Route {
         std::string method;
         std::string path;
@@ -96,4 +130,9 @@ private:
     std::mutex client_mutex_;
     std::vector<std::thread> client_threads_;
     std::unordered_set<int> client_fds_;
+
+    // Auth settings
+    std::string secret_;
+    bool auth_enabled_ = false;
+    bool auth_stream_ = true;  // Default: protect stream
 };

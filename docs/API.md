@@ -12,6 +12,101 @@ Port configurable via `-p` or `--port` command line option.
 
 ---
 
+## Authentication
+
+When `--auth` is enabled, API endpoints and MJPEG stream require token authentication.
+
+**Auth Options**
+
+| Option | Description |
+|--------|-------------|
+| `--auth` | Enable token authentication |
+| `--secret STRING` | Auth secret (auto-generated 16-char hex if not specified) |
+| `--auth-no-stream` | Enable auth but don't protect MJPEG stream (implies `--auth`) |
+
+**Token Mechanism**
+
+- Token = `SHA256(secret + ":" + timestamp)` where timestamp = Unix time / 300 (5-minute window)
+- Client sends token via `Authorization: Bearer <token>` header or `?token=<token>` query parameter
+- Server validates by recomputing hash for current and adjacent timestamps (±5 min tolerance)
+
+**Protected Endpoints (when auth enabled)**
+
+- All `/api/*` endpoints (except `/api/auth-info` and `/api/auth/verify`)
+- `/snapshot`
+- `/stream/mjpeg` (unless `--auth-no-stream` is used)
+
+**Unprotected Endpoints**
+
+- Static files (`/`, `/index.html`, `/assets/*`)
+- `/api/auth-info` (for checking auth status)
+- `/api/auth/verify` (for validating secret)
+
+---
+
+### GET /api/auth-info
+
+Check if authentication is required.
+
+**Response (auth disabled)**
+
+```json
+{
+  "require_auth": false
+}
+```
+
+**Response (auth enabled)**
+
+```json
+{
+  "require_auth": true,
+  "auth_stream": true
+}
+```
+
+**Fields**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `require_auth` | bool | Authentication required for API |
+| `auth_stream` | bool | Authentication required for stream (only when `require_auth` is true) |
+
+This endpoint is always accessible, allowing clients to determine auth requirements before making other requests.
+
+---
+
+### POST /api/auth/verify
+
+Verify that a secret is valid. Used by the frontend to validate user input before granting access.
+
+**Request**
+
+Send token via `Authorization: Bearer <token>` header (no body needed).
+
+**Response (success)**
+
+```json
+{
+  "ok": true
+}
+```
+
+**Response (invalid secret)**
+
+```json
+{
+  "ok": false,
+  "error": "Invalid secret"
+}
+```
+
+HTTP status 401 on invalid secret.
+
+This endpoint is always accessible (no auth required to call it). When auth is disabled, it always returns success.
+
+---
+
 ## Endpoints
 
 ### GET /api/cameras
@@ -625,6 +720,9 @@ Options:
       --no-awb          Disable auto white balance
       --no-ae           Disable auto exposure
       --no-af           Disable auto focus
+      --auth            Enable token authentication
+      --secret STRING   Auth secret (auto-generated if not specified)
+      --auth-no-stream  Enable auth but don't protect MJPEG stream (implies --auth)
   -h, --help            Show this help message
   -V, --version         Show version information
 ```

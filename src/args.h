@@ -90,6 +90,9 @@ inline void print_help(const char* name) {
     printf("      --no-awb          Disable auto white balance\n");
     printf("      --no-ae           Disable auto exposure\n");
     printf("      --no-af           Disable auto focus\n");
+    printf("      --auth            Enable token authentication\n");
+    printf("      --secret STRING   Auth secret (auto-generated if not specified)\n");
+    printf("      --auth-no-stream  Enable auth but don't protect MJPEG stream (implies --auth)\n");
     printf("  -h, --help            Show this help message\n");
     printf("  -V, --version         Show version information\n\n");
 

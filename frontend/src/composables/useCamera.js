@@ -1,4 +1,4 @@
-import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { ref, reactive } from 'vue'
 import * as api from '../api.js'
 
 export function useCamera() {
@@ -83,11 +83,16 @@ export function useCamera() {
     if (pollTimer) clearInterval(pollTimer)
   }
 
-  onMounted(() => {
+  function start() {
     loadCameras().then(startPolling)
-  })
+  }
 
-  onUnmounted(stopPolling)
+  function stop() {
+    stopPolling()
+  }
+
+  // Don't auto-start on mount - wait for auth to be ready
+  // App.vue will call start() after auth is verified
 
   return {
     cameras,
@@ -100,5 +105,7 @@ export function useCamera() {
     connected,
     selectCam,
     setRotation,
+    start,
+    stop,
   }
 }
