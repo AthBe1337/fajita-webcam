@@ -18,6 +18,8 @@
 #include <mutex>
 #include <thread>
 #include <filesystem>
+#include <termios.h>
+#include <unistd.h>
 
 using json = nlohmann::json;
 
@@ -51,6 +53,30 @@ int main(int argc, char* argv[]) {
     signal(SIGTERM, signal_handler);
     signal(SIGPIPE, SIG_IGN);
 
+    // Disable terminal echo and input processing
+    struct termios orig_termios, new_termios;
+    bool termios_modified = false;
+    if (isatty(STDIN_FILENO)) {
+        if (tcgetattr(STDIN_FILENO, &orig_termios) == 0) {
+            new_termios = orig_termios;
+            new_termios.c_lflag &= ~(ECHO | ECHONL | ICANON);
+            if (tcsetattr(STDIN_FILENO, TCSANOW, &new_termios) == 0) {
+                termios_modified = true;
+            }
+        }
+    }
+
+    // RAII guard to restore terminal settings
+    struct TermiosGuard {
+        bool modified;
+        struct termios orig;
+        ~TermiosGuard() {
+            if (modified) {
+                tcsetattr(STDIN_FILENO, TCSANOW, &orig);
+            }
+        }
+    } termios_guard{termios_modified, orig_termios};
+
     ArgParser args(argc, argv);
 
     // Help and version
@@ -76,11 +102,13 @@ int main(int argc, char* argv[]) {
     bool no_ae = args.has_flag("--no-ae", nullptr);
     bool no_af = args.has_flag("--no-af", nullptr);
 
-    // Set log level
-    if (log_level_str == "debug") g_log_level = LogLevel::DEBUG;
-    else if (log_level_str == "info") g_log_level = LogLevel::INFO;
-    else if (log_level_str == "warn") g_log_level = LogLevel::WARN;
-    else if (log_level_str == "error") g_log_level = LogLevel::ERROR;
+    // Set log level (case-insensitive)
+    std::string level = log_level_str;
+    for (char& c : level) c = tolower(c);
+    if (level == "debug") g_log_level = LogLevel::DEBUG;
+    else if (level == "info") g_log_level = LogLevel::INFO;
+    else if (level == "warn" || level == "warning") g_log_level = LogLevel::WARN;
+    else if (level == "error" || level == "err") g_log_level = LogLevel::ERROR;
 
     LOG_INFO("fajita-webcam starting...");
     LOG_DEBUG("Options: port=%d, camera=%d, quality=%d, downsample=%d, fps=%d",

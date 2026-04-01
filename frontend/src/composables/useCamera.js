@@ -26,6 +26,7 @@ export function useCamera() {
   const connected = ref(true)
 
   let pollTimer = null
+  let wasConnected = true
 
   async function loadCameras() {
     try {
@@ -49,12 +50,27 @@ export function useCamera() {
       Object.assign(status, s)
       connected.value = true
 
-      if (currentIndex.value < 0 && s.camera_index >= 0) {
+      // Check if backend reconnected
+      if (!wasConnected) {
+        // Backend just came back online - reload everything
+        await loadCameras()
+      }
+
+      // Update current camera from status
+      if (s.camera_index >= 0) {
         currentIndex.value = s.camera_index
         currentCamera.value = cameras.value[s.camera_index] || null
       }
+
+      // Update AE/AWB state from status
+      if (s.ae) aeAuto.value = s.ae.auto
+      if (s.awb) awbAuto.value = s.awb.auto
+      if (s.af) cafOn.value = s.af.mode === 'continuous'
+
+      wasConnected = true
     } catch {
       connected.value = false
+      wasConnected = false
     }
   }
 

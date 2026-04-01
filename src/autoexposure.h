@@ -22,7 +22,7 @@ public:
 private:
     float compute_brightness(const uint8_t* bayer, int width, int height, BayerPattern pattern);
 
-    std::atomic<bool> auto_mode_{false};
+    std::atomic<bool> auto_mode_{true};
     std::atomic<float> target_brightness_{80.0f};
     std::atomic<float> current_brightness_{0.0f};
 

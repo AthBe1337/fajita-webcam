@@ -67,7 +67,7 @@ public:
 
 private:
     void accept_loop();
-    void handle_client(int fd);
+    void handle_client(int fd, const std::string& client_ip);
     bool parse_request(int fd, HttpRequest& req);
     void send_response(int fd, const HttpResponse& resp);
     bool serve_embedded_static(int fd, const std::string& path);

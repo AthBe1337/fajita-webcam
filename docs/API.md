@@ -96,6 +96,7 @@ Get current streaming and control status.
     "jpeg_ms": 12.3
   },
   "downsample": 4,
+  "rotation": 0,
   "jpeg_quality": 80,
   "exposure": 2000,
   "analogue_gain": 400,
@@ -131,6 +132,7 @@ Get current streaming and control status.
 | `timing.isp_ms` | float | ISP processing time (unpack + demosaic) |
 | `timing.jpeg_ms` | float | JPEG encoding time |
 | `downsample` | int | Current downsampling factor (1/2/4) |
+| `rotation` | int | Current rotation angle (0/90/180/270) |
 | `jpeg_quality` | int | JPEG quality (1-100) |
 | `exposure` | int | Current exposure value |
 | `analogue_gain` | int | Current analog gain |
@@ -349,7 +351,8 @@ Configure stream parameters.
 {
   "quality": 90,
   "fps": 15,
-  "downsample": 2
+  "downsample": 2,
+  "rotation": 90
 }
 ```
 
@@ -370,10 +373,12 @@ All fields optional.
 | `quality` | 1-100 | JPEG compression quality |
 | `fps` | 0-30 | Target frame rate (0 = unlimited) |
 | `downsample` | 1, 2, 4 | Downsampling factor |
+| `rotation` | 0, 90, 180, 270 | Rotation angle (server-side) |
 
 **Notes**
 
 - Changing `downsample` requires pipeline restart (brief interruption)
+- `rotation` is applied server-side before JPEG encoding (no restart needed)
 - Higher quality = larger JPEG, slower encoding
 - Lower downsample = higher resolution, slower processing
 

@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <sys/stat.h>
@@ -109,17 +110,27 @@ void HttpServer::accept_loop() {
             break;
         }
 
+        // Get client IP address
+        char client_ip[INET6_ADDRSTRLEN] = "unknown";
+        if (addr.ss_family == AF_INET) {
+            struct sockaddr_in* s = (struct sockaddr_in*)&addr;
+            inet_ntop(AF_INET, &s->sin_addr, client_ip, sizeof(client_ip));
+        } else if (addr.ss_family == AF_INET6) {
+            struct sockaddr_in6* s = (struct sockaddr_in6*)&addr;
+            inet_ntop(AF_INET6, &s->sin6_addr, client_ip, sizeof(client_ip));
+        }
+
         // Handle each client in a worker thread; track it for clean shutdown.
         std::lock_guard<std::mutex> lock(client_mutex_);
-        client_threads_.emplace_back([this, client]() {
-            handle_client(client);
+        client_threads_.emplace_back([this, client, client_ip]() {
+            handle_client(client, client_ip);
         });
     }
 
     join_client_threads();
 }
 
-void HttpServer::handle_client(int fd) {
+void HttpServer::handle_client(int fd, const std::string& client_ip) {
     register_client_fd(fd);
     auto cleanup = [&]() {
         unregister_client_fd(fd);
@@ -132,9 +143,12 @@ void HttpServer::handle_client(int fd) {
         return;
     }
 
+    int response_status = 200;
+
     // Check stream routes first
     for (auto& sr : stream_routes_) {
         if (req.path == sr.path && req.method == "GET") {
+            LOG_INFO("HTTP %s %s %s %d", client_ip.c_str(), req.method.c_str(), req.path.c_str(), 200);
             sr.handler(fd, req);
             cleanup();
             return;
@@ -145,7 +159,9 @@ void HttpServer::handle_client(int fd) {
     for (auto& r : routes_) {
         if (r.method == req.method && r.path == req.path) {
             auto resp = r.handler(req);
+            response_status = resp.status;
             send_response(fd, resp);
+            LOG_INFO("HTTP %s %s %s %d", client_ip.c_str(), req.method.c_str(), req.path.c_str(), response_status);
             cleanup();
             return;
         }
@@ -157,13 +173,16 @@ void HttpServer::handle_client(int fd) {
         if (file_path == "/") file_path = "/index.html";
         if (serve_embedded_static(fd, file_path) ||
             (!static_dir_.empty() && serve_static(fd, file_path))) {
+            LOG_INFO("HTTP %s %s %s %d", client_ip.c_str(), req.method.c_str(), req.path.c_str(), 200);
             cleanup();
             return;
         }
     }
 
     // 404
+    response_status = 404;
     send_response(fd, HttpResponse::error(404, "Not Found"));
+    LOG_INFO("HTTP %s %s %s %d", client_ip.c_str(), req.method.c_str(), req.path.c_str(), response_status);
     cleanup();
 }
 
