@@ -1,5 +1,6 @@
 #include "pipeline.h"
 #include "isp.h"
+#include "logging.h"
 
 #include <cstdio>
 #include <cstring>
@@ -84,9 +85,9 @@ bool Pipeline::start() {
 #if HAS_GPU_ISP
     if (!gpu_isp_.is_available()) {
         if (gpu_isp_.init())
-            printf("Pipeline: GPU ISP available\n");
+            LOG_DEBUG("Pipeline: GPU ISP available");
         else
-            printf("Pipeline: GPU ISP not available, using CPU\n");
+            LOG_DEBUG("Pipeline: GPU ISP not available, using CPU");
     }
     gpu_configured_ = false;
 #endif
@@ -171,7 +172,7 @@ void Pipeline::encode_jpeg(const uint8_t* rgb, int width, int height,
 }
 
 void Pipeline::capture_loop() {
-    printf("Pipeline capture loop started\n");
+    LOG_DEBUG("Pipeline capture loop started");
 
     int frame_count = 0;
     auto fps_start = std::chrono::steady_clock::now();
@@ -389,7 +390,7 @@ void Pipeline::capture_loop() {
                 // Total frame time = elapsed / frames
                 float total_ms = elapsed * 1000.0f / timing_frames;
                 float other_ms = total_ms - time_unpack_ms_ - time_jpeg_ms_;
-                printf("  ISP: %.1fms  JPEG: %.1fms  Wait: %.1fms  (%.1f fps)\n",
+                LOG_DEBUG("  ISP: %.1fms  JPEG: %.1fms  Wait: %.1fms  (%.1f fps)",
                        time_unpack_ms_.load(), time_jpeg_ms_.load(), other_ms, fps_.load());
             }
             fps_frames = 0;
@@ -411,5 +412,5 @@ void Pipeline::capture_loop() {
         }
     }
 
-    printf("Pipeline capture loop ended\n");
+    LOG_DEBUG("Pipeline capture loop ended");
 }

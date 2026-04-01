@@ -1,4 +1,5 @@
 #include "camera.h"
+#include "logging.h"
 
 #include <cstdio>
 #include <cstring>
@@ -78,7 +79,7 @@ bool Camera::open(const char* media_dev, const char* video_dev) {
         return false;
     }
     if (!enumerate_entities()) {
-        fprintf(stderr, "Failed to enumerate media entities\n");
+        LOG_ERROR("Failed to enumerate media entities");
         close();
         return false;
     }
@@ -124,7 +125,7 @@ bool Camera::enumerate_entities() {
         }
         entities_.push_back(std::move(ei));
     }
-    printf("Enumerated %zu media entities\n", entities_.size());
+    LOG_INFO("Enumerated %zu media entities", entities_.size());
     return true;
 }
 
@@ -137,17 +138,17 @@ Camera::EntityInfo* Camera::find_entity(const std::string& name) {
 int Camera::open_entity_subdev(const std::string& entity_name) {
     auto* ei = find_entity(entity_name);
     if (!ei) {
-        fprintf(stderr, "Entity not found: %s\n", entity_name.c_str());
+        LOG_ERROR("Entity not found: %s", entity_name.c_str());
         return -1;
     }
     if (ei->devnode.empty()) {
-        fprintf(stderr, "Entity %s has no device node\n", entity_name.c_str());
+        LOG_ERROR("Entity %s has no device node", entity_name.c_str());
         return -1;
     }
-    printf("Opening %s -> %s\n", entity_name.c_str(), ei->devnode.c_str());
+    LOG_DEBUG("Opening %s -> %s", entity_name.c_str(), ei->devnode.c_str());
     int fd = ::open(ei->devnode.c_str(), O_RDWR);
     if (fd < 0)
-        fprintf(stderr, "Cannot open %s (%s): %s\n",
+        LOG_ERROR("Cannot open %s (%s): %s",
                 entity_name.c_str(), ei->devnode.c_str(), strerror(errno));
     return fd;
 }
@@ -157,7 +158,7 @@ bool Camera::setup_link(const std::string& source, int src_pad,
     auto* src_ent = find_entity(source);
     auto* snk_ent = find_entity(sink);
     if (!src_ent || !snk_ent) {
-        fprintf(stderr, "setup_link: entity not found: %s -> %s\n",
+        LOG_ERROR("setup_link: entity not found: %s -> %s",
                 source.c_str(), sink.c_str());
         return false;
     }
@@ -195,19 +196,19 @@ bool Camera::setup_link(const std::string& source, int src_pad,
                 setup.flags &= ~MEDIA_LNK_FL_ENABLED;
 
             if (xioctl(media_fd_, MEDIA_IOC_SETUP_LINK, &setup) < 0) {
-                fprintf(stderr, "setup_link %s:%d -> %s:%d [%s]: %s\n",
+                LOG_ERROR("setup_link %s:%d -> %s:%d [%s]: %s",
                         source.c_str(), src_pad, sink.c_str(), sink_pad,
                         enable ? "on" : "off", strerror(errno));
                 return false;
             }
-            printf("  Link %s:%d -> %s:%d [%s]\n",
+            LOG_DEBUG("  Link %s:%d -> %s:%d [%s]",
                    source.c_str(), src_pad, sink.c_str(), sink_pad,
                    enable ? "enabled" : "disabled");
             return true;
         }
     }
 
-    fprintf(stderr, "Link not found: %s:%d -> %s:%d\n",
+    LOG_ERROR("Link not found: %s:%d -> %s:%d",
             source.c_str(), src_pad, sink.c_str(), sink_pad);
     return false;
 }
@@ -228,11 +229,11 @@ bool Camera::set_subdev_format(const std::string& entity, int pad,
     int ret = xioctl(fd, VIDIOC_SUBDEV_S_FMT, &fmt);
     ::close(fd);
     if (ret < 0) {
-        fprintf(stderr, "set_subdev_format %s pad %d: %s\n",
+        LOG_ERROR("set_subdev_format %s pad %d: %s",
                 entity.c_str(), pad, strerror(errno));
         return false;
     }
-    printf("  Format %s pad%d: %dx%d code=0x%04x\n",
+    LOG_DEBUG("  Format %s pad%d: %dx%d code=0x%04x",
            entity.c_str(), pad, fmt.format.width, fmt.format.height, fmt.format.code);
     return true;
 }
@@ -253,7 +254,7 @@ bool Camera::set_video_format(int width, int height, uint32_t pixfmt) {
         perror("VIDIOC_S_FMT (MPLANE)");
         return false;
     }
-    printf("  Video format: %dx%d planes=%d sizeimage=%d bytesperline=%d\n",
+    LOG_DEBUG("  Video format: %dx%d planes=%d sizeimage=%d bytesperline=%d",
            fmt.fmt.pix_mp.width, fmt.fmt.pix_mp.height,
            fmt.fmt.pix_mp.num_planes,
            fmt.fmt.pix_mp.plane_fmt[0].sizeimage,
@@ -270,7 +271,7 @@ bool Camera::disconnect_all() {
 }
 
 bool Camera::activate_pipeline(const CameraConfig& cfg) {
-    printf("Activating pipeline for %s\n", cfg.name.c_str());
+    LOG_INFO("Activating pipeline for %s", cfg.name.c_str());
 
     // Enable links
     if (!setup_link(cfg.csiphy, 1, "msm_csid0", 0, true)) return false;
@@ -294,7 +295,7 @@ bool Camera::activate_pipeline(const CameraConfig& cfg) {
     if (!set_video_format(cfg.width, cfg.height, cfg.v4l2_pixfmt))
         return false;
 
-    printf("Pipeline activated: %s %dx%d\n", cfg.name.c_str(), cfg.width, cfg.height);
+    LOG_INFO("Pipeline activated: %s %dx%d", cfg.name.c_str(), cfg.width, cfg.height);
     return true;
 }
 
@@ -325,7 +326,7 @@ bool Camera::select(int index) {
     if (cfg.has_af && !cfg.af_entity.empty()) {
         runtime_.af_subdev_fd = open_entity_subdev(cfg.af_entity);
         if (runtime_.af_subdev_fd < 0)
-            fprintf(stderr, "Warning: AF motor not available\n");
+            LOG_WARN("AF motor not available");
     }
 
     // Set default exposure/gain
@@ -343,7 +344,7 @@ bool Camera::set_v4l2_ctrl(int fd, uint32_t id, int value) {
     ctrl.id = id;
     ctrl.value = value;
     if (xioctl(fd, VIDIOC_S_CTRL, &ctrl) < 0) {
-        fprintf(stderr, "set ctrl 0x%08x = %d: %s\n", id, value, strerror(errno));
+        LOG_ERROR("set ctrl 0x%08x = %d: %s", id, value, strerror(errno));
         return false;
     }
     return true;
@@ -461,7 +462,7 @@ bool Camera::start_streaming(int buffer_count) {
     }
 
     streaming_ = true;
-    printf("Streaming started (%u buffers)\n", req.count);
+    LOG_INFO("Streaming started (%u buffers)", req.count);
     return true;
 }
 
@@ -485,7 +486,7 @@ void Camera::stop_streaming() {
     xioctl(video_fd_, VIDIOC_REQBUFS, &req);
 
     streaming_ = false;
-    printf("Streaming stopped\n");
+    LOG_INFO("Streaming stopped");
 }
 
 bool Camera::dequeue_frame(Frame& frame) {

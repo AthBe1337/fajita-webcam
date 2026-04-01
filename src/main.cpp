@@ -417,7 +417,6 @@ int main(int argc, char* argv[]) {
     });
 
     // Start server
-    LOG_INFO("HTTP server listening on port %d", port);
     LOG_INFO("Open http://localhost:%d in your browser", port);
 
     std::thread http_thread([&]() {
@@ -439,7 +438,7 @@ int main(int argc, char* argv[]) {
         http_thread.join();
 
     camera.close();
-    LOG_INFO("Goodbye");
+    LOG_INFO("Server stopped");
 
     return 0;
 }

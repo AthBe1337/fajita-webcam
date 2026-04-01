@@ -1,5 +1,6 @@
 #include "http.h"
 #include "embedded_assets.h"
+#include "logging.h"
 
 #include <cstdio>
 #include <cstring>
@@ -65,7 +66,7 @@ bool HttpServer::start(int port) {
     }
 
     running_ = true;
-    printf("HTTP server listening on port %d\n", port);
+    LOG_INFO("HTTP server listening on port %d", port);
 
     // Accept loop in current thread (blocking)
     accept_loop();
