@@ -13,6 +13,7 @@ export function useCamera() {
     digital_gain: 0,
     focus: 0,
     downsample: 4,
+    rotation: 0,
     ae: null,
     awb: null,
     af: null,
@@ -36,6 +37,10 @@ export function useCamera() {
     await api.selectCamera(index)
     currentIndex.value = index
     currentCamera.value = cameras.value[index] || null
+  }
+
+  async function setRotation(rot) {
+    await api.setStream({ rotation: rot })
   }
 
   async function pollStatus() {
@@ -78,5 +83,6 @@ export function useCamera() {
     cafOn,
     connected,
     selectCam,
+    setRotation,
   }
 }

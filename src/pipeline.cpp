@@ -56,6 +56,85 @@ static void upsample_rgb_2x(const uint8_t* in, uint8_t* out, int width, int heig
     }
 }
 
+// Rotate RGB image. Supports 0, 90, 180, 270 degrees.
+void Pipeline::rotate_rgb(std::vector<uint8_t>& rgb, int& width, int& height, int rotation) {
+    if (rotation == 0 || rotation == 360) return;
+
+    rotation = ((rotation % 360) + 360) % 360;
+    if (rotation != 90 && rotation != 180 && rotation != 270) return;
+
+    std::vector<uint8_t> rotated;
+
+    if (rotation == 180) {
+        // 180°: flip both axes, dimensions stay same
+        rotated.resize(rgb.size());
+        int row_size = width * 3;
+        for (int y = 0; y < height; y++) {
+            const uint8_t* src = rgb.data() + y * row_size;
+            uint8_t* dst = rotated.data() + (height - 1 - y) * row_size;
+            for (int x = 0; x < width; x++) {
+                dst[(width - 1 - x) * 3 + 0] = src[x * 3 + 0];
+                dst[(width - 1 - x) * 3 + 1] = src[x * 3 + 1];
+                dst[(width - 1 - x) * 3 + 2] = src[x * 3 + 2];
+            }
+        }
+    } else {
+        // 90° or 270°: swap dimensions
+        int new_w = height;
+        int new_h = width;
+        rotated.resize(new_w * new_h * 3);
+
+        if (rotation == 90) {
+            // 90° clockwise: (x, y) -> (height - 1 - y, x)
+            for (int y = 0; y < height; y++) {
+                const uint8_t* src = rgb.data() + y * width * 3;
+                for (int x = 0; x < width; x++) {
+                    int nx = height - 1 - y;
+                    int ny = x;
+                    uint8_t* dst = rotated.data() + ny * new_w * 3 + nx * 3;
+                    dst[0] = src[x * 3 + 0];
+                    dst[1] = src[x * 3 + 1];
+                    dst[2] = src[x * 3 + 2];
+                }
+            }
+        } else {
+            // 270° clockwise (90° counter-clockwise): (x, y) -> (y, width - 1 - x)
+            for (int y = 0; y < height; y++) {
+                const uint8_t* src = rgb.data() + y * width * 3;
+                for (int x = 0; x < width; x++) {
+                    int nx = y;
+                    int ny = width - 1 - x;
+                    uint8_t* dst = rotated.data() + ny * new_w * 3 + nx * 3;
+                    dst[0] = src[x * 3 + 0];
+                    dst[1] = src[x * 3 + 1];
+                    dst[2] = src[x * 3 + 2];
+                }
+            }
+        }
+        width = new_w;
+        height = new_h;
+    }
+
+    rgb = std::move(rotated);
+}
+
+void Pipeline::get_output_size(int& w, int& h) const {
+    auto cfg = get_config();
+    auto* cam_cfg = camera_.active_config();
+    if (!cam_cfg) {
+        w = h = 0;
+        return;
+    }
+
+    w = cam_cfg->width / cfg.downsample;
+    h = cam_cfg->height / cfg.downsample;
+
+    // Swap dimensions if rotated 90 or 270
+    if (cfg.rotation == 90 || cfg.rotation == 270) {
+        std::swap(w, h);
+    }
+}
+
 Pipeline::Pipeline(Camera& camera, MjpegStream& stream)
     : camera_(camera), stream_(stream) {}
 
@@ -360,6 +439,11 @@ void Pipeline::capture_loop() {
         }
 
         auto t1 = Clock::now(); // end of ISP (unpack+demosaic)
+
+        // Rotate if needed
+        if (cfg.rotation != 0) {
+            rotate_rgb(rgb, out_w, out_h, cfg.rotation);
+        }
 
         // JPEG encode
         encode_jpeg(rgb.data(), out_w, out_h, cfg.jpeg_quality, jpeg);

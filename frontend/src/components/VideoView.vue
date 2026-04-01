@@ -2,7 +2,6 @@
 import { ref, computed, watch } from 'vue'
 
 const props = defineProps({
-  rotation: { type: Number, default: 0 },
   flipH: { type: Boolean, default: false },
   flipV: { type: Boolean, default: false },
   zoom: { type: Number, default: 1 },
@@ -11,6 +10,7 @@ const props = defineProps({
   camera: { type: Object, default: null },
   recording: { type: Boolean, default: false },
   recordingTime: { type: Number, default: 0 },
+  connected: { type: Boolean, default: true },
 })
 
 const imgEl = ref(null)
@@ -18,15 +18,33 @@ const streamSrc = ref('/stream/mjpeg?' + Date.now())
 
 defineExpose({ imgEl })
 
-watch(() => props.camera, () => {
+function reloadStream() {
   streamSrc.value = ''
   setTimeout(() => { streamSrc.value = '/stream/mjpeg?' + Date.now() }, 300)
+}
+
+// Reload stream when camera or downsample changes
+watch(() => props.camera, reloadStream)
+watch(() => props.status?.downsample, reloadStream)
+
+// Reload stream when backend reconnects
+let wasConnected = true
+watch(() => props.connected, (now) => {
+  if (now && !wasConnected) {
+    reloadStream()
+  }
+  wasConnected = now
 })
 
+// Also handle img load error (auto-retry on failure)
+function onImgError() {
+  setTimeout(reloadStream, 1000)
+}
+
+// Only flip/zoom (rotation is server-side)
 const transform = computed(() => {
   const parts = []
   if (props.zoom !== 1) parts.push(`scale(${props.zoom})`)
-  if (props.rotation) parts.push(`rotate(${props.rotation}deg)`)
   if (props.flipH) parts.push('scaleX(-1)')
   if (props.flipV) parts.push('scaleY(-1)')
   return parts.join(' ') || 'none'
@@ -36,8 +54,12 @@ const overlayText = computed(() => {
   const s = props.status
   const cam = props.camera
   const ds = s.downsample || 4
-  const w = cam ? Math.floor(cam.width / ds) : '?'
-  const h = cam ? Math.floor(cam.height / ds) : '?'
+  const rot = s.rotation || 0
+  let w = cam ? Math.floor(cam.width / ds) : '?'
+  let h = cam ? Math.floor(cam.height / ds) : '?'
+  // Swap dimensions if rotated 90 or 270
+  if (rot === 90 || rot === 270) [w, h] = [h, w]
+
   const fps = s.fps?.toFixed(1) || '--'
   const kb = s.jpeg_size ? (s.jpeg_size / 1024).toFixed(0) : '--'
   return `${w} x ${h}  |  ${fps} fps  |  ${kb} KB`
@@ -59,6 +81,7 @@ const recordTime = computed(() => {
       class="stream"
       :style="{ transform }"
       draggable="false"
+      @error="onImgError"
     >
 
     <!-- Grid overlays -->
@@ -94,8 +117,10 @@ const recordTime = computed(() => {
   flex: 1; display: flex; align-items: center; justify-content: center;
   position: relative; overflow: hidden; min-height: 0;
 }
+/* Fix: always fill container while maintaining aspect ratio */
 .stream {
-  max-width: 100%; max-height: 100%; object-fit: contain;
+  width: 100%; height: 100%;
+  object-fit: contain;  /* Never stretch, always maintain ratio */
   transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
   user-select: none; -webkit-user-drag: none;
 }
@@ -116,10 +141,7 @@ const recordTime = computed(() => {
   color: #fff; padding: 6px 14px; border-radius: 20px;
   font-size: 12px; font-weight: 700; letter-spacing: 0.5px;
 }
-.rec-dot {
-  width: 8px; height: 8px; border-radius: 50%; background: #fff;
-  animation: rec-blink 1s ease infinite;
-}
+.rec-dot { width: 8px; height: 8px; border-radius: 50%; background: #fff; animation: rec-blink 1s ease infinite; }
 .rec-time { font-variant-numeric: tabular-nums; font-weight: 500; }
 @keyframes rec-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 

@@ -206,6 +206,7 @@ int main(int argc, char* argv[]) {
                 {"jpeg_ms", pipeline.time_jpeg()},
             }},
             {"downsample", pcfg.downsample},
+            {"rotation", pcfg.rotation},
             {"jpeg_quality", pcfg.jpeg_quality},
             {"exposure", camera.get_exposure()},
             {"analogue_gain", camera.get_analogue_gain()},
@@ -385,6 +386,13 @@ int main(int argc, char* argv[]) {
                 cfg.downsample = ds;
                 need_restart = true;
                 LOG_DEBUG("Setting downsample: %d (restart required)", ds);
+            }
+        }
+        if (j.contains("rotation")) {
+            int rot = j["rotation"].get<int>();
+            if (rot == 0 || rot == 90 || rot == 180 || rot == 270) {
+                cfg.rotation = rot;
+                LOG_DEBUG("Setting rotation: %d", rot);
             }
         }
 

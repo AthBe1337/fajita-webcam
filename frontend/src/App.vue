@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, provide, onMounted, onUnmounted } from 'vue'
+import { ref, computed, provide, onMounted, onUnmounted, watch } from 'vue'
 import { useCamera } from './composables/useCamera.js'
 import { useRecorder } from './composables/useRecorder.js'
 import VideoView from './components/VideoView.vue'
@@ -10,8 +10,7 @@ const cam = useCamera()
 const videoRef = ref(null)
 const recorder = useRecorder()
 
-// View transforms
-const rotation = ref(0)
+// Client-side transforms (flip/zoom only, rotation is server-side)
 const flipH = ref(false)
 const flipV = ref(false)
 const zoom = ref(1)
@@ -23,8 +22,16 @@ function checkMobile() { isMobile.value = window.innerWidth < 768 }
 onMounted(() => { checkMobile(); window.addEventListener('resize', checkMobile) })
 onUnmounted(() => window.removeEventListener('resize', checkMobile))
 
-function rotateRight() { rotation.value = (rotation.value + 90) % 360 }
-function rotateLeft() { rotation.value = (rotation.value + 270) % 360 }
+// Rotation goes to backend
+function rotateRight() {
+  const newRot = (cam.status.rotation + 90) % 360
+  cam.setRotation(newRot)
+}
+function rotateLeft() {
+  const newRot = (cam.status.rotation + 270) % 360
+  cam.setRotation(newRot)
+}
+
 function toggleFlipH() { flipH.value = !flipH.value }
 function toggleFlipV() { flipV.value = !flipV.value }
 function zoomIn() { zoom.value = Math.min(zoom.value + 0.25, 4) }
@@ -113,7 +120,6 @@ provide('cam', cam)
       <div class="video-area">
         <VideoView
           ref="videoRef"
-          :rotation="rotation"
           :flip-h="flipH"
           :flip-v="flipV"
           :zoom="zoom"
@@ -122,6 +128,7 @@ provide('cam', cam)
           :camera="cam.currentCamera.value"
           :recording="recorder.recording.value"
           :recording-time="recorder.recordingTime.value"
+          :connected="cam.connected.value"
         />
       </div>
 
@@ -144,7 +151,7 @@ provide('cam', cam)
 
     <!-- Toolbar -->
     <Toolbar
-      :rotation="rotation"
+      :rotation="cam.status.rotation"
       :flip-h="flipH"
       :flip-v="flipV"
       :zoom="zoom"
@@ -189,7 +196,6 @@ provide('cam', cam)
 </template>
 
 <style>
-
 :root {
   --bg-deep: #0c0c14;
   --bg-base: #13131e;
@@ -223,7 +229,6 @@ body {
   display: flex; flex-direction: column; outline: none;
 }
 
-/* --- Header --- */
 .header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 16px; background: var(--bg-base);
@@ -256,33 +261,18 @@ body {
   background: var(--accent); border-color: var(--accent);
   color: #fff; font-weight: 600;
 }
-.status-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-}
+.status-dot { width: 8px; height: 8px; border-radius: 50%; }
 .status-dot.online { background: #4ade80; box-shadow: 0 0 6px rgba(74, 222, 128, 0.5); }
 .status-dot.offline { background: var(--accent); animation: pulse-dot 1.2s infinite; }
 @keyframes pulse-dot { 50% { opacity: 0.3; } }
 
-/* --- Content --- */
-.content {
-  flex: 1; display: flex; min-height: 0; position: relative;
-}
-.video-area {
-  flex: 1; display: flex; min-width: 0;
-  position: relative; background: #000;
-}
+.content { flex: 1; display: flex; min-height: 0; position: relative; }
+.video-area { flex: 1; display: flex; min-width: 0; position: relative; background: #000; }
 
-/* --- Desktop side panel --- */
-.side-panel {
-  width: 300px; flex-shrink: 0;
-  border-left: 1px solid var(--border);
-}
-.slide-panel-enter-active,
-.slide-panel-leave-active { transition: all 0.25s ease; }
-.slide-panel-enter-from,
-.slide-panel-leave-to { width: 0; opacity: 0; overflow: hidden; }
+.side-panel { width: 300px; flex-shrink: 0; border-left: 1px solid var(--border); }
+.slide-panel-enter-active, .slide-panel-leave-active { transition: all 0.25s ease; }
+.slide-panel-enter-from, .slide-panel-leave-to { width: 0; opacity: 0; overflow: hidden; }
 
-/* --- Mobile bottom sheet --- */
 .sheet-backdrop {
   position: fixed; inset: 0; z-index: 100;
   background: rgba(0, 0, 0, 0.5);
@@ -295,22 +285,13 @@ body {
   border-radius: 16px 16px 0 0;
   overflow: hidden; display: flex; flex-direction: column;
 }
-.sheet-handle {
-  display: flex; justify-content: center; padding: 10px 0 6px;
-  cursor: pointer; flex-shrink: 0;
-}
-.handle-bar {
-  width: 36px; height: 4px; border-radius: 2px;
-  background: rgba(255, 255, 255, 0.2);
-}
+.sheet-handle { display: flex; justify-content: center; padding: 10px 0 6px; cursor: pointer; flex-shrink: 0; }
+.handle-bar { width: 36px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.2); }
 .sheet-enter-active { transition: all 0.3s ease-out; }
 .sheet-leave-active { transition: all 0.25s ease-in; }
-.sheet-enter-from .sheet,
-.sheet-leave-to .sheet { transform: translateY(100%); }
-.sheet-enter-from,
-.sheet-leave-to { background: rgba(0, 0, 0, 0); }
+.sheet-enter-from .sheet, .sheet-leave-to .sheet { transform: translateY(100%); }
+.sheet-enter-from, .sheet-leave-to { background: rgba(0, 0, 0, 0); }
 
-/* --- Mobile overrides --- */
 @media (max-width: 767px) {
   .header { padding: 8px 12px; }
   .logo span { display: none; }

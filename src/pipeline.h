@@ -25,6 +25,7 @@ struct PipelineConfig {
     int target_fps = 15;     // 0 = unlimited
     float r_gain = 1.0f;     // WB red gain
     float b_gain = 1.0f;     // WB blue gain
+    int rotation = 0;        // 0, 90, 180, 270 degrees
 };
 
 class Pipeline {
@@ -46,11 +47,17 @@ public:
     float current_fps() const { return fps_; }
     size_t last_jpeg_size() const { return last_jpeg_size_; }
 
+    // Get current output dimensions (after rotation)
+    void get_output_size(int& width, int& height) const;
+
 private:
     void capture_loop();
     void analysis_loop();
     void encode_jpeg(const uint8_t* rgb, int width, int height,
                      int quality, std::vector<uint8_t>& out);
+
+    // Rotate RGB image in-place
+    void rotate_rgb(std::vector<uint8_t>& rgb, int& width, int& height, int rotation);
 
     Camera& camera_;
     MjpegStream& stream_;

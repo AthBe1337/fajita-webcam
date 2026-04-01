@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 
 const props = defineProps({
-  rotation: Number,
+  rotation: { type: Number, default: 0 },
   flipH: Boolean,
   flipV: Boolean,
   zoom: Number,
@@ -26,6 +26,8 @@ const recordTime = computed(() => {
   const s = props.recordingTime % 60
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
 })
+
+const rotLabel = computed(() => `${props.rotation}°`)
 </script>
 
 <template>
@@ -54,6 +56,7 @@ const recordTime = computed(() => {
       <button class="tbtn" @click="emit('rotate-left')" title="Rotate Left (Shift+R)">
         <svg viewBox="0 0 24 24"><path d="M7.11 8.53L5.7 7.11C4.8 8.27 4.24 9.61 4.07 11h2.02c.14-.87.49-1.72 1.02-2.47zM6.09 13H4.07c.17 1.39.72 2.73 1.62 3.89l1.41-1.42c-.52-.75-.87-1.59-1.01-2.47zm1.01 5.32c1.16.9 2.51 1.44 3.9 1.61V17.9c-.87-.15-1.71-.49-2.46-1.03L7.1 18.32zM13 4.07V1L8.45 5.55 13 10V6.09c2.84.48 5 2.94 5 5.91s-2.16 5.43-5 5.91v2.02c3.95-.49 7-3.85 7-7.93s-3.05-7.44-7-7.93z"/></svg>
       </button>
+      <button class="rot-badge" title="Current rotation">{{ rotLabel }}</button>
       <button class="tbtn" @click="emit('rotate-right')" title="Rotate Right (R)">
         <svg viewBox="0 0 24 24"><path d="M15.55 5.55L11 1v3.07C7.06 4.56 4 7.92 4 12s3.05 7.44 7 7.93v-2.02c-2.84-.48-5-2.94-5-5.91s2.16-5.43 5-5.91V10l4.55-4.45zM19.93 11c-.17-1.39-.72-2.73-1.62-3.89l-1.42 1.42c.54.75.88 1.6 1.02 2.47h2.02zM13 17.9v2.02c1.39-.17 2.74-.71 3.9-1.61l-1.44-1.44c-.75.54-1.59.89-2.46 1.03zm3.89-2.42l1.42 1.41c.9-1.16 1.45-2.5 1.62-3.89h-2.02c-.14.87-.48 1.72-1.02 2.48z"/></svg>
       </button>
@@ -65,7 +68,6 @@ const recordTime = computed(() => {
       </button>
     </div>
 
-    <!-- Hide zoom on very small screens -->
     <div class="tool-divider hide-xs"></div>
     <div class="tool-group hide-xs">
       <button class="tbtn" @click="emit('zoom-out')" title="Zoom Out (-)">
@@ -73,7 +75,7 @@ const recordTime = computed(() => {
       </button>
       <button class="zoom-badge" @click="emit('reset-zoom')" title="Reset Zoom (0)">{{ zoomLabel }}</button>
       <button class="tbtn" @click="emit('zoom-in')" title="Zoom In (+)">
-        <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14zM9 9V7h1v2h2v1h-2v2H9v-2H7V9z"/></svg>
+        <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14zM9 9V7h1v2h2v1h-2v2H9v-2H7V9h2z"/></svg>
       </button>
     </div>
 
@@ -106,10 +108,7 @@ const recordTime = computed(() => {
   -webkit-backdrop-filter: blur(20px);
 }
 .tool-group { display: flex; align-items: center; gap: 2px; }
-.tool-divider {
-  width: 1px; height: 22px; background: var(--border-light);
-  margin: 0 6px; flex-shrink: 0;
-}
+.tool-divider { width: 1px; height: 22px; background: var(--border-light); margin: 0 6px; flex-shrink: 0; }
 
 .tbtn {
   width: 38px; height: 38px; border: none; border-radius: var(--radius);
@@ -123,10 +122,8 @@ const recordTime = computed(() => {
 .tbtn.active { color: var(--accent); background: var(--accent-dim); }
 .tbtn svg { width: 18px; height: 18px; fill: currentColor; }
 
-/* Screenshot button */
 .capture-btn:hover { color: #4ade80; background: rgba(74, 222, 128, 0.1); }
 
-/* Record button */
 .record-btn { gap: 4px; }
 .record-btn:not(.active) svg { fill: #ef4444; }
 .record-btn.active {
@@ -134,27 +131,21 @@ const recordTime = computed(() => {
   width: auto; padding: 0 12px;
   animation: rec-glow 1.5s ease infinite;
 }
-.rec-label {
-  font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
-  letter-spacing: 0.5px;
-}
+.rec-label { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.5px; }
 @keyframes rec-glow { 50% { background: rgba(239, 68, 68, 0.25); } }
 
-/* Settings button */
 .settings-btn.active svg { animation: spin-once 0.4s ease; }
 @keyframes spin-once { from { transform: rotate(0); } to { transform: rotate(60deg); } }
 
-/* Zoom badge */
-.zoom-badge {
+.zoom-badge, .rot-badge {
   min-width: 42px; height: 26px; border: 1px solid var(--border-light);
   border-radius: 20px; background: transparent;
   color: var(--text-muted); cursor: pointer;
   font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums;
   transition: all 0.15s;
 }
-.zoom-badge:hover { background: var(--bg-elevated); color: var(--text-primary); border-color: var(--border-light); }
+.zoom-badge:hover, .rot-badge:hover { background: var(--bg-elevated); color: var(--text-primary); border-color: var(--border-light); }
 
-/* Mobile */
 @media (max-width: 767px) {
   .toolbar { padding: 6px 8px; padding-bottom: calc(6px + var(--safe-bottom)); gap: 2px; justify-content: center; }
   .tbtn { width: 42px; height: 42px; border-radius: 12px; }
