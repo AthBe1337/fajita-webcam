@@ -82,13 +82,13 @@ void main() {
 )glsl";
 
 // ---------------------------------------------------------------------------
-// Compute shader: Bilinear demosaic Bayer → RGB (packed as 1 uint per pixel)
+// Compute shader: Bilinear demosaic Bayer → RGBA (1 uint per pixel, no atomics)
 // ---------------------------------------------------------------------------
 static const char* kDemosaicShaderSource = R"glsl(#version 310 es
 layout(local_size_x = 64) in;
 
 layout(std430, binding = 1) readonly buffer BayerBuf { uint bayer_in[]; };
-layout(std430, binding = 2)          buffer RgbBuf   { uint rgb_out[]; };
+layout(std430, binding = 2) writeonly buffer RgbaBuf  { uint rgba_out[]; };
 
 uniform int u_width;
 uniform int u_height;
@@ -140,24 +140,8 @@ void main() {
         r = (get(x-1,y-1) + get(x+1,y-1) + get(x-1,y+1) + get(x+1,y+1) + 2u) >> 2;
     }
 
-    // Pack RGB into 3 consecutive bytes via the uint array.
-    // Output layout: sequential R,G,B bytes packed into uint32.
-    int byte_off = gid * 3;
-    int word = byte_off >> 2;
-    int lane = byte_off & 3;
-
-    // Each pixel writes 3 bytes that may span 2 uint32 words.
-    // Since gid is unique per pixel, and 3 bytes from different pixels never
-    // overlap the same word at the same byte lane, we can use atomicOr safely.
-    uint val0 = (r << uint(lane * 8));
-    if (lane + 1 < 4) val0 |= (g << uint((lane + 1) * 8));
-    if (lane + 2 < 4) val0 |= (b << uint((lane + 2) * 8));
-    atomicOr(rgb_out[word], val0);
-
-    if (lane + 1 >= 4)
-        atomicOr(rgb_out[word + 1], g << uint((lane + 1 - 4) * 8));
-    if (lane + 2 >= 4)
-        atomicOr(rgb_out[word + 1], b << uint((lane + 2 - 4) * 8));
+    // Pack as RGBA: R in bits 0-7, G in 8-15, B in 16-23, A=255 in 24-31
+    rgba_out[gid] = r | (g << 8u) | (b << 16u) | (255u << 24u);
 }
 )glsl";
 
@@ -170,10 +154,10 @@ GpuIsp::GpuIsp() {}
 GpuIsp::~GpuIsp() { shutdown(); }
 
 bool GpuIsp::init() {
-    // Temporarily disabled - freedreno has issues with SSBO readback after compute
-    // CPU path with NEON + multi-threading is fast enough for current sensor frame rates
+    // Disabled pending freedreno driver fix for SSBO mapping after compute.
+    // CPU path with NEON + multi-threading achieves ~30ms ISP which is fast enough
+    // for current sensor frame rates (6fps at full resolution).
     return false;
-#if 0
     drm_fd_ = open("/dev/dri/renderD128", O_RDWR);
     if (drm_fd_ < 0) {
         perror("GpuIsp: open renderD128");
@@ -226,7 +210,6 @@ bool GpuIsp::init() {
     printf("GpuIsp: initialized (%s)\n", glGetString(GL_RENDERER));
     available_ = true;
     return true;
-#endif
 }
 
 void GpuIsp::shutdown() {
@@ -325,7 +308,7 @@ bool GpuIsp::configure(int raw_width, int raw_height, int stride,
     // Allocate SSBOs
     raw_buf_size_ = stride * raw_height;
     bayer_buf_size_ = (size_t)out_w_ * out_h_ * 4;  // 1 uint per pixel
-    rgb_buf_size_ = (size_t)((out_w_ * out_h_ * 3 + 3) & ~3);  // packed RGB bytes
+    rgb_buf_size_ = (size_t)out_w_ * out_h_ * 4;    // RGBA: 1 uint (4 bytes) per pixel
 
     auto alloc_ssbo = [](GLuint& buf, size_t size, GLenum usage) {
         if (buf) glDeleteBuffers(1, &buf);
@@ -335,8 +318,8 @@ bool GpuIsp::configure(int raw_width, int raw_height, int stride,
     };
 
     alloc_ssbo(raw_ssbo_, raw_buf_size_, GL_STREAM_DRAW);     // CPU → GPU
-    alloc_ssbo(bayer_ssbo_, bayer_buf_size_, GL_DYNAMIC_COPY);  // GPU ↔ GPU (zeroed from CPU)
-    alloc_ssbo(rgb_ssbo_, rgb_buf_size_, GL_STREAM_READ);      // GPU → CPU
+    alloc_ssbo(bayer_ssbo_, bayer_buf_size_, GL_DYNAMIC_COPY);  // GPU ↔ GPU
+    alloc_ssbo(rgb_ssbo_, rgb_buf_size_, GL_DYNAMIC_COPY);      // GPU → CPU (GPU writes, CPU reads via map)
 
     GLenum err = glGetError();
     if (err != GL_NO_ERROR) {
@@ -368,19 +351,8 @@ bool GpuIsp::process(const uint8_t* raw_data, size_t raw_size,
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
                     std::min(raw_size, raw_buf_size_), raw_data);
 
-    // Re-upload zeroed bayer and rgb (atomicOr needs zeroed buffers)
-    // Use glBufferData to orphan+reallocate, which is faster than glBufferSubData
-    // for full-buffer updates and avoids GPU stalls
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, bayer_ssbo_);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, bayer_buf_size_, nullptr, GL_DYNAMIC_COPY);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, rgb_ssbo_);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, rgb_buf_size_, nullptr, GL_STREAM_READ);
-
-    GLenum err = glGetError();
-    if (err != GL_NO_ERROR) {
-        fprintf(stderr, "GpuIsp: upload error: 0x%x\n", err);
-        return false;
-    }
+    // Don't orphan the output buffers - just reuse them
+    // The compute shaders will overwrite the content
 
     int total_pixels = out_w_ * out_h_;
     int groups = (total_pixels + 63) / 64;
@@ -414,35 +386,40 @@ bool GpuIsp::process(const uint8_t* raw_data, size_t raw_size,
 
     glDispatchCompute(groups, 1, 1);
 
-    // Ensure all writes complete, then unbind indexed SSBO slots before mapping
+    // Ensure all compute work is done
+    glMemoryBarrier(GL_ALL_BARRIER_BITS);
     glFinish();
+
+    // Unbind SSBOs
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, 0);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, 0);
 
-    // Read back: use a separate readback buffer to work around freedreno mapping issues
-    // after compute shader writes
-    if (read_buf_ == 0) {
-        glGenBuffers(1, &read_buf_);
-    }
-    glBindBuffer(GL_COPY_WRITE_BUFFER, read_buf_);
-    glBufferData(GL_COPY_WRITE_BUFFER, rgb_buf_size_, nullptr, GL_STREAM_READ);
-
-    // Copy from SSBO to readback buffer
+    // Direct map of output buffer
     glBindBuffer(GL_COPY_READ_BUFFER, rgb_ssbo_);
-    glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, rgb_buf_size_);
-    glFinish();
-
-    // Map the readback buffer
-    glBindBuffer(GL_COPY_READ_BUFFER, read_buf_);
-    size_t rgb_bytes = (size_t)out_w_ * out_h_ * 3;
-    void* mapped = glMapBufferRange(GL_COPY_READ_BUFFER, 0, rgb_bytes, GL_MAP_READ_BIT);
+    size_t rgba_bytes = (size_t)out_w_ * out_h_ * 4;
+    void* mapped = glMapBufferRange(GL_COPY_READ_BUFFER, 0, rgba_bytes, GL_MAP_READ_BIT);
     if (!mapped) {
-        fprintf(stderr, "GpuIsp: map failed after copy\n");
+        GLenum err = glGetError();
+        fprintf(stderr, "GpuIsp: map failed (err=0x%x) size=%zu\n", err, rgba_bytes);
         return false;
     }
-    memcpy(rgb_out, mapped, rgb_bytes);
+
+    // Convert RGBA to RGB (skip alpha channel)
+    const uint8_t* rgba = (const uint8_t*)mapped;
+    size_t n_pixels = (size_t)out_w_ * out_h_;
+    for (size_t i = 0; i < n_pixels; i++) {
+        rgb_out[i * 3 + 0] = rgba[i * 4 + 0];  // R
+        rgb_out[i * 3 + 1] = rgba[i * 4 + 1];  // G
+        rgb_out[i * 3 + 2] = rgba[i * 4 + 2];  // B
+    }
     glUnmapBuffer(GL_COPY_READ_BUFFER);
+
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR) {
+        fprintf(stderr, "GpuIsp: GL error after readback: 0x%x\n", err);
+        return false;
+    }
 
     return true;
 }

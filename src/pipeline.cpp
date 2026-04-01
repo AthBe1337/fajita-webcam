@@ -386,8 +386,11 @@ void Pipeline::capture_loop() {
             if (timing_frames > 0) {
                 time_unpack_ms_ = acc_unpack / timing_frames;
                 time_jpeg_ms_ = acc_jpeg / timing_frames;
-                printf("  ISP: %.1fms  JPEG: %.1fms  (%.1f fps)\n",
-                       time_unpack_ms_.load(), time_jpeg_ms_.load(), fps_.load());
+                // Total frame time = elapsed / frames
+                float total_ms = elapsed * 1000.0f / timing_frames;
+                float other_ms = total_ms - time_unpack_ms_ - time_jpeg_ms_;
+                printf("  ISP: %.1fms  JPEG: %.1fms  Wait: %.1fms  (%.1f fps)\n",
+                       time_unpack_ms_.load(), time_jpeg_ms_.load(), other_ms, fps_.load());
             }
             fps_frames = 0;
             fps_start = now;

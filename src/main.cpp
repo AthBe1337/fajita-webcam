@@ -138,7 +138,7 @@ int main(int argc, char* argv[]) {
         PipelineConfig cfg;
         cfg.downsample = 4;
         cfg.jpeg_quality = 80;
-        cfg.target_fps = 15;
+        cfg.target_fps = 0;  // Unlimited - let sensor be the bottleneck
         pipeline.set_config(cfg);
     }
     if (!pipeline.start()) {
