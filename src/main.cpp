@@ -6,6 +6,8 @@
 #include "autowhitebalance.h"
 #include "autoexposure.h"
 #include "autofocus.h"
+#include "logging.h"
+#include "args.h"
 #include "json.hpp"
 
 #include <cstdio>
@@ -32,17 +34,13 @@ static const char* bayer_name(BayerPattern pattern) {
     return "unknown";
 }
 
-// Find the static/ directory relative to the executable
 static std::string find_static_dir(const char* argv0) {
     namespace fs = std::filesystem;
-    // Try relative to executable
     fs::path exe = fs::canonical(argv0);
     fs::path dir = exe.parent_path() / "static";
     if (fs::is_directory(dir)) return dir.string();
-    // Try ../static (if binary is in build/ subdir)
     dir = exe.parent_path().parent_path() / "static";
     if (fs::is_directory(dir)) return dir.string();
-    // Fallback to current directory
     dir = fs::current_path() / "static";
     if (fs::is_directory(dir)) return dir.string();
     return "static";
@@ -53,47 +51,63 @@ int main(int argc, char* argv[]) {
     signal(SIGTERM, signal_handler);
     signal(SIGPIPE, SIG_IGN);
 
-    int port = 8080;
-    const char* media_dev = "/dev/media0";
-    const char* video_dev = "/dev/video0";
-    int default_camera = 0;
+    ArgParser args(argc, argv);
 
-    for (int i = 1; i < argc; i++) {
-        std::string arg = argv[i];
-        if (arg == "-p" && i + 1 < argc) port = std::atoi(argv[++i]);
-        else if (arg == "-m" && i + 1 < argc) media_dev = argv[++i];
-        else if (arg == "-v" && i + 1 < argc) video_dev = argv[++i];
-        else if (arg == "-c" && i + 1 < argc) default_camera = std::atoi(argv[++i]);
-        else if (arg == "-h" || arg == "--help") {
-            printf("Usage: %s [-p port] [-m media_dev] [-v video_dev] [-c camera_index]\n", argv[0]);
-            printf("  -p  HTTP port (default: 8080)\n");
-            printf("  -m  Media device (default: /dev/media0)\n");
-            printf("  -v  Video device (default: /dev/video0)\n");
-            printf("  -c  Default camera: 0=imx519, 1=imx376k, 2=imx371\n");
-            return 0;
-        }
+    // Help and version
+    if (args.has_flag("-h", "--help")) {
+        print_help(argv[0]);
+        return 0;
     }
+    if (args.has_flag("-V", "--version")) {
+        print_version(argv[0]);
+        return 0;
+    }
+
+    // Parse options
+    int port = args.get_int("-p", "--port", 8080);
+    std::string media_dev = args.get_string("-m", "--media", "/dev/media0");
+    std::string video_dev = args.get_string("-v", "--video", "/dev/video0");
+    int camera_idx = args.get_int("-c", "--camera", 0);
+    int jpeg_quality = args.get_int("-q", "--quality", 80);
+    int downsample = args.get_int("-d", "--downsample", 4);
+    int target_fps = args.get_int("-f", "--fps", 0);
+    std::string log_level_str = args.get_string("-l", "--log-level", "info");
+    bool no_awb = args.has_flag("--no-awb", nullptr);
+    bool no_ae = args.has_flag("--no-ae", nullptr);
+    bool no_af = args.has_flag("--no-af", nullptr);
+
+    // Set log level
+    if (log_level_str == "debug") g_log_level = LogLevel::DEBUG;
+    else if (log_level_str == "info") g_log_level = LogLevel::INFO;
+    else if (log_level_str == "warn") g_log_level = LogLevel::WARN;
+    else if (log_level_str == "error") g_log_level = LogLevel::ERROR;
+
+    LOG_INFO("fajita-webcam starting...");
+    LOG_DEBUG("Options: port=%d, camera=%d, quality=%d, downsample=%d, fps=%d",
+              port, camera_idx, jpeg_quality, downsample, target_fps);
 
     // Initialize camera
     Camera camera;
-    if (!camera.open(media_dev, video_dev)) {
-        fprintf(stderr, "Failed to open camera devices\n");
+    if (!camera.open(media_dev.c_str(), video_dev.c_str())) {
+        LOG_ERROR("Failed to open camera devices: media=%s, video=%s",
+                  media_dev.c_str(), video_dev.c_str());
         return 1;
     }
 
-    printf("Available cameras:\n");
-    for (int i = 0; i < (int)camera.configs().size(); i++) {
+    LOG_INFO("Found %zu cameras", camera.configs().size());
+    for (size_t i = 0; i < camera.configs().size(); i++) {
         auto& c = camera.configs()[i];
-        printf("  [%d] %s (%dx%d) %s\n", i, c.name.c_str(),
-               c.width, c.height, c.has_af ? "[AF]" : "");
+        LOG_INFO("  [%zu] %s (%dx%d) %s", i, c.name.c_str(),
+                 c.width, c.height, c.has_af ? "AF" : "");
     }
 
-    if (!camera.select(default_camera)) {
-        fprintf(stderr, "Failed to select camera %d\n", default_camera);
+    if (!camera.select(camera_idx)) {
+        LOG_ERROR("Failed to select camera %d", camera_idx);
         return 1;
     }
+    LOG_INFO("Selected camera: %s", camera.active_config()->name.c_str());
 
-    // Create components
+    // Create pipeline
     MjpegStream mjpeg_stream;
     Pipeline pipeline(camera, mjpeg_stream);
 
@@ -101,17 +115,19 @@ int main(int argc, char* argv[]) {
     AutoExposure ae;
     AutoFocus af;
 
-    // Latest focus metric for AF trigger
+    // Disable auto modes if requested
+    if (no_awb) awb.set_auto(false);
+    if (no_ae) ae.set_auto(false);
+
     std::mutex metric_mutex;
     float latest_focus_metric = 0;
 
-    // Analysis callback: runs every N frames from capture thread
+    // Analysis callback
     pipeline.set_analysis_callback([&](const AnalysisFrame& frame) {
-        awb.analyze(frame.bayer, frame.width, frame.height, frame.pattern);
-        ae.analyze(frame.bayer, frame.width, frame.height,
-                   frame.pattern, camera);
+        if (!no_awb) awb.analyze(frame.bayer, frame.width, frame.height, frame.pattern);
+        if (!no_ae) ae.analyze(frame.bayer, frame.width, frame.height, frame.pattern, camera);
 
-        // Compute focus metric
+        // Focus metric
         int roi_w = std::min(256, frame.width);
         int roi_h = std::min(256, frame.height);
         int roi_x = (frame.width - roi_w) / 2;
@@ -123,54 +139,41 @@ int main(int argc, char* argv[]) {
             latest_focus_metric = fm;
         }
 
-        // Update WB gains in pipeline
+        // Update WB gains
         PipelineConfig cfg = pipeline.get_config();
         cfg.r_gain = awb.r_gain();
         cfg.b_gain = awb.b_gain();
         pipeline.set_config(cfg);
 
-        // Continuous AF check
-        af.update_continuous(camera, fm);
+        // Continuous AF
+        if (!no_af) af.update_continuous(camera, fm);
     }, 5);
 
-    // Start pipeline
+    // Configure pipeline
     {
         PipelineConfig cfg;
-        cfg.downsample = 4;
-        cfg.jpeg_quality = 80;
-        cfg.target_fps = 0;  // Unlimited - let sensor be the bottleneck
+        cfg.downsample = downsample;
+        cfg.jpeg_quality = jpeg_quality;
+        cfg.target_fps = target_fps;
         pipeline.set_config(cfg);
     }
+
     if (!pipeline.start()) {
-        fprintf(stderr, "Failed to start pipeline\n");
+        LOG_ERROR("Failed to start pipeline");
         return 1;
     }
+    LOG_INFO("Pipeline started");
 
-    // Setup HTTP server
+    // HTTP server
     HttpServer http;
     http.set_static_dir(find_static_dir(argv[0]));
 
-    // MJPEG stream endpoint
-    http.stream_route("/stream/mjpeg", [&](int fd, const HttpRequest&) {
-        mjpeg_stream.serve_client(fd);
-    });
+    // ============ API Routes ============
 
-    // Snapshot
-    http.route("GET", "/snapshot", [&](const HttpRequest&) -> HttpResponse {
-        auto frame = mjpeg_stream.get_latest();
-        if (frame.data.empty())
-            return HttpResponse::error(503, "No frame available");
-        HttpResponse resp;
-        resp.status = 200;
-        resp.content_type = "image/jpeg";
-        resp.body.assign((char*)frame.data.data(), frame.data.size());
-        return resp;
-    });
-
-    // API: list cameras
+    // GET /api/cameras - List cameras
     http.route("GET", "/api/cameras", [&](const HttpRequest&) -> HttpResponse {
         json arr = json::array();
-        for (int i = 0; i < (int)camera.configs().size(); i++) {
+        for (size_t i = 0; i < camera.configs().size(); i++) {
             auto& c = camera.configs()[i];
             arr.push_back({
                 {"index", i},
@@ -188,33 +191,7 @@ int main(int argc, char* argv[]) {
         return HttpResponse::json(arr.dump());
     });
 
-    // API: select camera
-    http.route("POST", "/api/camera/select", [&](const HttpRequest& req) -> HttpResponse {
-        auto j = json::parse(req.body, nullptr, false);
-        if (j.is_discarded() || !j.contains("index"))
-            return HttpResponse::error(400, "Need {\"index\": N}");
-
-        int idx = j["index"].get<int>();
-
-        af.reset();
-        pipeline.stop();
-        camera.stop_streaming();
-
-        if (!camera.select(idx))
-            return HttpResponse::error(500, "Failed to select camera");
-
-        {
-            std::lock_guard<std::mutex> lock(metric_mutex);
-            latest_focus_metric = 0;
-        }
-
-        if (!pipeline.start())
-            return HttpResponse::error(500, "Failed to start pipeline");
-
-        return HttpResponse::json(json({{"ok", true}, {"camera", camera.active_config()->name}}).dump());
-    });
-
-    // API: get status
+    // GET /api/status - Current status
     http.route("GET", "/api/status", [&](const HttpRequest&) -> HttpResponse {
         auto* cfg = camera.active_config();
         auto pcfg = pipeline.get_config();
@@ -256,43 +233,85 @@ int main(int argc, char* argv[]) {
         return HttpResponse::json(j.dump());
     });
 
-    // API: set controls
+    // POST /api/camera/select - Switch camera
+    http.route("POST", "/api/camera/select", [&](const HttpRequest& req) -> HttpResponse {
+        auto j = json::parse(req.body, nullptr, false);
+        if (j.is_discarded() || !j.contains("index"))
+            return HttpResponse::error(400, R"({"error": "Missing 'index' field"})");
+
+        int idx = j["index"].get<int>();
+        LOG_INFO("Switching to camera %d", idx);
+
+        af.reset();
+        pipeline.stop();
+        camera.stop_streaming();
+
+        if (!camera.select(idx)) {
+            LOG_ERROR("Failed to select camera %d", idx);
+            return HttpResponse::error(500, R"({"error": "Failed to select camera"})");
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(metric_mutex);
+            latest_focus_metric = 0;
+        }
+
+        if (!pipeline.start()) {
+            LOG_ERROR("Failed to restart pipeline");
+            return HttpResponse::error(500, R"({"error": "Failed to start pipeline"})");
+        }
+
+        return HttpResponse::json(json{{"ok", true}, {"camera", camera.active_config()->name}}.dump());
+    });
+
+    // POST /api/control - Set camera controls
     http.route("POST", "/api/control", [&](const HttpRequest& req) -> HttpResponse {
         auto j = json::parse(req.body, nullptr, false);
         if (j.is_discarded())
-            return HttpResponse::error(400, "Invalid JSON");
+            return HttpResponse::error(400, R"({"error": "Invalid JSON"})");
 
-        if (j.contains("exposure"))
-            camera.set_exposure(j["exposure"].get<int>());
-        if (j.contains("analogue_gain"))
-            camera.set_analogue_gain(j["analogue_gain"].get<int>());
-        if (j.contains("digital_gain"))
-            camera.set_digital_gain(j["digital_gain"].get<int>());
+        if (j.contains("exposure")) {
+            int val = j["exposure"].get<int>();
+            LOG_DEBUG("Setting exposure: %d", val);
+            camera.set_exposure(val);
+        }
+        if (j.contains("analogue_gain")) {
+            int val = j["analogue_gain"].get<int>();
+            LOG_DEBUG("Setting analogue_gain: %d", val);
+            camera.set_analogue_gain(val);
+        }
+        if (j.contains("digital_gain")) {
+            int val = j["digital_gain"].get<int>();
+            LOG_DEBUG("Setting digital_gain: %d", val);
+            camera.set_digital_gain(val);
+        }
 
-        return HttpResponse::json("{\"ok\":true}");
+        return HttpResponse::json(R"({"ok": true})");
     });
 
-    // API: focus control
+    // POST /api/focus - Control autofocus
     http.route("POST", "/api/focus", [&](const HttpRequest& req) -> HttpResponse {
         auto* cfg = camera.active_config();
         if (!cfg || !cfg->has_af)
-            return HttpResponse::error(400, "Camera has no AF");
+            return HttpResponse::error(400, R"({"error": "Camera has no AF"})");
 
         auto j = json::parse(req.body, nullptr, false);
         if (j.is_discarded())
-            return HttpResponse::error(400, "Invalid JSON");
+            return HttpResponse::error(400, R"({"error": "Invalid JSON"})");
 
         if (j.contains("position")) {
-            af.set_mode(AFMode::Manual);
             int pos = j["position"].get<int>();
+            LOG_DEBUG("Setting focus position: %d", pos);
+            af.set_mode(AFMode::Manual);
             if (!camera.set_focus(pos)) {
                 af.mark_failed();
-                return HttpResponse::error(500, "Failed to set focus");
+                return HttpResponse::error(500, R"({"error": "Failed to set focus"})");
             }
             af.set_manual_position(pos);
         }
         if (j.contains("mode")) {
             std::string mode = j["mode"].get<std::string>();
+            LOG_DEBUG("Setting focus mode: %s", mode.c_str());
             if (mode == "manual") {
                 af.set_mode(AFMode::Manual);
                 af.set_manual_position(std::max(camera.get_focus(), 0));
@@ -307,61 +326,65 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        return HttpResponse::json("{\"ok\":true}");
+        return HttpResponse::json(R"({"ok": true})");
     });
 
-    // API: AWB control
+    // POST /api/awb - Control white balance
     http.route("POST", "/api/awb", [&](const HttpRequest& req) -> HttpResponse {
         auto j = json::parse(req.body, nullptr, false);
         if (j.is_discarded())
-            return HttpResponse::error(400, "Invalid JSON");
+            return HttpResponse::error(400, R"({"error": "Invalid JSON"})");
 
         if (j.contains("auto"))
             awb.set_auto(j["auto"].get<bool>());
         if (j.contains("r_gain") && j.contains("b_gain"))
             awb.set_gains(j["r_gain"].get<float>(), j["b_gain"].get<float>());
 
-        // Update pipeline
         PipelineConfig pcfg = pipeline.get_config();
         pcfg.r_gain = awb.r_gain();
         pcfg.b_gain = awb.b_gain();
         pipeline.set_config(pcfg);
 
-        return HttpResponse::json("{\"ok\":true}");
+        return HttpResponse::json(R"({"ok": true})");
     });
 
-    // API: AE control
+    // POST /api/ae - Control auto exposure
     http.route("POST", "/api/ae", [&](const HttpRequest& req) -> HttpResponse {
         auto j = json::parse(req.body, nullptr, false);
         if (j.is_discarded())
-            return HttpResponse::error(400, "Invalid JSON");
+            return HttpResponse::error(400, R"({"error": "Invalid JSON"})");
 
         if (j.contains("auto"))
             ae.set_auto(j["auto"].get<bool>());
         if (j.contains("target"))
             ae.set_target_brightness(j["target"].get<float>());
 
-        return HttpResponse::json("{\"ok\":true}");
+        return HttpResponse::json(R"({"ok": true})");
     });
 
-    // API: stream quality control
+    // POST /api/stream - Stream parameters
     http.route("POST", "/api/stream", [&](const HttpRequest& req) -> HttpResponse {
         auto j = json::parse(req.body, nullptr, false);
         if (j.is_discarded())
-            return HttpResponse::error(400, "Invalid JSON");
+            return HttpResponse::error(400, R"({"error": "Invalid JSON"})");
 
         PipelineConfig cfg = pipeline.get_config();
         bool need_restart = false;
 
-        if (j.contains("quality"))
+        if (j.contains("quality")) {
             cfg.jpeg_quality = std::clamp(j["quality"].get<int>(), 1, 100);
-        if (j.contains("fps"))
-            cfg.target_fps = std::clamp(j["fps"].get<int>(), 1, 30);
+            LOG_DEBUG("Setting JPEG quality: %d", cfg.jpeg_quality);
+        }
+        if (j.contains("fps")) {
+            cfg.target_fps = std::clamp(j["fps"].get<int>(), 0, 30);
+            LOG_DEBUG("Setting target FPS: %d", cfg.target_fps);
+        }
         if (j.contains("downsample")) {
             int ds = j["downsample"].get<int>();
             if (ds != cfg.downsample && (ds == 1 || ds == 2 || ds == 4)) {
                 cfg.downsample = ds;
                 need_restart = true;
+                LOG_DEBUG("Setting downsample: %d (restart required)", ds);
             }
         }
 
@@ -373,24 +396,40 @@ int main(int argc, char* argv[]) {
             pipeline.set_config(cfg);
         }
 
-        return HttpResponse::json("{\"ok\":true}");
+        return HttpResponse::json(R"({"ok": true})");
     });
 
-    printf("\nStarting server on port %d...\n", port);
-    printf("Open http://localhost:%d in your browser\n\n", port);
+    // GET /snapshot - Single JPEG
+    http.route("GET", "/snapshot", [&](const HttpRequest&) -> HttpResponse {
+        auto frame = mjpeg_stream.get_latest();
+        if (frame.data.empty())
+            return HttpResponse::error(503, R"({"error": "No frame available"})");
+        HttpResponse resp;
+        resp.status = 200;
+        resp.content_type = "image/jpeg";
+        resp.body.assign((char*)frame.data.data(), frame.data.size());
+        return resp;
+    });
 
-    // HTTP server runs in accept loop (blocks)
-    // Run in a thread so we can handle signals
+    // MJPEG stream
+    http.stream_route("/stream/mjpeg", [&](int fd, const HttpRequest&) {
+        mjpeg_stream.serve_client(fd);
+    });
+
+    // Start server
+    LOG_INFO("HTTP server listening on port %d", port);
+    LOG_INFO("Open http://localhost:%d in your browser", port);
+
     std::thread http_thread([&]() {
         http.start(port);
     });
 
-    // Wait for signal
+    // Main loop
     while (g_running) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    printf("\nShutting down...\n");
+    LOG_INFO("Shutting down...");
     pipeline.stop();
     camera.stop_streaming();
     mjpeg_stream.stop();
@@ -400,6 +439,7 @@ int main(int argc, char* argv[]) {
         http_thread.join();
 
     camera.close();
+    LOG_INFO("Goodbye");
 
     return 0;
 }
