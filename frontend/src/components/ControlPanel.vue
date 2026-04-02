@@ -81,19 +81,33 @@ function setDS(ds) { downsample.value = ds; api.setStream({ downsample: ds }) }
 // --- Sync from status ---
 watch(() => props.status, (s) => {
   if (!s) return
-  if (props.aeAuto && s.exposure != null) {
-    exposure.value = s.exposure
-    analogueGain.value = s.analogue_gain
+
+  // Sync exposure/gain (always sync to show current values)
+  if (s.exposure != null) exposure.value = s.exposure
+  if (s.analogue_gain != null) analogueGain.value = s.analogue_gain
+  if (s.digital_gain != null) digitalGain.value = s.digital_gain
+
+  // Sync AE target
+  if (s.ae?.target != null) aeTarget.value = Math.round(s.ae.target)
+
+  // Sync WB gains
+  if (s.awb) {
+    if (s.awb.r_gain != null) rGain.value = Math.round(s.awb.r_gain * 100)
+    if (s.awb.b_gain != null) bGain.value = Math.round(s.awb.b_gain * 100)
   }
-  if (props.awbAuto && s.awb) {
-    rGain.value = Math.round(s.awb.r_gain * 100)
-    bGain.value = Math.round(s.awb.b_gain * 100)
-  }
+
+  // Sync focus position
   if (s.af) {
     if (s.af.state === 'locked' || s.af.state === 'idle') {
-      focusPos.value = s.af.position || s.focus
+      focusPos.value = s.af.position || s.focus || 0
     }
   }
+
+  // Sync stream params
+  if (s.jpeg_quality != null) quality.value = s.jpeg_quality
+  if (s.downsample != null) downsample.value = s.downsample
+  if (s.target_fps != null) fps.value = s.target_fps
+
 }, { deep: true })
 
 const expMin = computed(() => props.camera?.exposure?.min ?? 0)

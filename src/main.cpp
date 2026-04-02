@@ -255,6 +255,7 @@ int main(int argc, char* argv[]) {
             {"downsample", pcfg.downsample},
             {"rotation", pcfg.rotation},
             {"jpeg_quality", pcfg.jpeg_quality},
+            {"target_fps", pcfg.target_fps},
             {"exposure", camera.get_exposure()},
             {"analogue_gain", camera.get_analogue_gain()},
             {"digital_gain", camera.get_digital_gain()},
