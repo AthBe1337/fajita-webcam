@@ -1,0 +1,79 @@
+#version 450
+// MIPI 10-bit → 8-bit Bayer with WB gains and optional downsample.
+// Each invocation produces one output Bayer pixel.
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer RawBuf   { uint  raw_data[];   };
+layout(set = 0, binding = 1, std430) writeonly buffer BayerBuf { uint  bayer_out[];  };
+
+layout(push_constant) uniform PC {
+    int   raw_w;
+    int   raw_h;
+    int   stride;
+    int   ds;
+    int   out_w;
+    int   out_h;
+    float r_gain;
+    float b_gain;
+    int   bayer;   // 0:RGGB 1:BGGR 2:GRBG 3:GBRG
+} pc;
+
+int bayer_color(int x, int y) {
+    int bx = x & 1;
+    int by = y & 1;
+    if (pc.bayer == 0) {
+        if (by == 0 && bx == 0) return 1;
+        if (by == 1 && bx == 1) return 2;
+    } else if (pc.bayer == 1) {
+        if (by == 0 && bx == 0) return 2;
+        if (by == 1 && bx == 1) return 1;
+    } else if (pc.bayer == 2) {
+        if (by == 0 && bx == 1) return 1;
+        if (by == 1 && bx == 0) return 2;
+    } else {
+        if (by == 0 && bx == 1) return 2;
+        if (by == 1 && bx == 0) return 1;
+    }
+    return 0;
+}
+
+uint read_raw_byte(int offset) {
+    return (raw_data[offset >> 2] >> uint((offset & 3) * 8)) & 0xFFu;
+}
+
+void main() {
+    int gid   = int(gl_GlobalInvocationID.x);
+    int total = pc.out_w * pc.out_h;
+    if (gid >= total) return;
+
+    int ox = gid % pc.out_w;
+    int oy = gid / pc.out_w;
+
+    float val;
+    if (pc.ds == 1) {
+        int group_start = oy * pc.stride + (ox / 4) * 5;
+        val = float(read_raw_byte(group_start + (ox & 3)));
+    } else {
+        int ds = pc.ds;
+        int samples = (ds * ds) / 4;
+        int sum = 0;
+        for (int dy = (oy & 1); dy < ds; dy += 2) {
+            int iy = oy * ds + dy;
+            int line_off = iy * pc.stride;
+            for (int dx = (ox & 1); dx < ds; dx += 2) {
+                int ix = ox * ds + dx;
+                int gs = line_off + (ix / 4) * 5;
+                sum += int(read_raw_byte(gs + (ix & 3)));
+            }
+        }
+        val = float(sum) / float(samples);
+    }
+
+    float gain = 1.0;
+    int color = bayer_color(ox, oy);
+    if (color == 1) gain = pc.r_gain;
+    else if (color == 2) gain = pc.b_gain;
+
+    bayer_out[gid] = uint(clamp(val * gain + 0.5, 0.0, 255.0));
+}

@@ -1,0 +1,76 @@
+#version 450
+// Bilinear demosaic Bayer → RGBA8888 packed in a uint per pixel.
+// Each invocation produces one output RGBA pixel.
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 1, std430) readonly  buffer BayerBuf { uint bayer_in[]; };
+layout(set = 0, binding = 2, std430) writeonly buffer RgbaBuf  { uint rgba_out[]; };
+
+layout(push_constant) uniform PC {
+    int width;
+    int height;
+    int bayer;
+} pc;
+
+int bayer_color(int x, int y) {
+    int bx = x & 1;
+    int by = y & 1;
+    if (pc.bayer == 0) {
+        if (by == 0 && bx == 0) return 1;
+        if (by == 1 && bx == 1) return 2;
+    } else if (pc.bayer == 1) {
+        if (by == 0 && bx == 0) return 2;
+        if (by == 1 && bx == 1) return 1;
+    } else if (pc.bayer == 2) {
+        if (by == 0 && bx == 1) return 1;
+        if (by == 1 && bx == 0) return 2;
+    } else {
+        if (by == 0 && bx == 1) return 2;
+        if (by == 1 && bx == 0) return 1;
+    }
+    return 0;
+}
+
+uint get(int x, int y) {
+    x = clamp(x, 0, pc.width  - 1);
+    y = clamp(y, 0, pc.height - 1);
+    return bayer_in[y * pc.width + x];
+}
+
+void main() {
+    int gid = int(gl_GlobalInvocationID.x);
+    int total = pc.width * pc.height;
+    if (gid >= total) return;
+
+    int x = gid % pc.width;
+    int y = gid / pc.width;
+
+    uint r, g, b;
+    int color = bayer_color(x, y);
+
+    if (color == 0) {
+        // Green pixel
+        g = get(x, y);
+        int left_color = bayer_color(x - 1, y);
+        if (left_color == 1) {
+            r = (get(x - 1, y) + get(x + 1, y) + 1u) >> 1;
+            b = (get(x, y - 1) + get(x, y + 1) + 1u) >> 1;
+        } else {
+            b = (get(x - 1, y) + get(x + 1, y) + 1u) >> 1;
+            r = (get(x, y - 1) + get(x, y + 1) + 1u) >> 1;
+        }
+    } else if (color == 1) {
+        // Red pixel
+        r = get(x, y);
+        g = (get(x - 1, y) + get(x + 1, y) + get(x, y - 1) + get(x, y + 1) + 2u) >> 2;
+        b = (get(x - 1, y - 1) + get(x + 1, y - 1) + get(x - 1, y + 1) + get(x + 1, y + 1) + 2u) >> 2;
+    } else {
+        // Blue pixel
+        b = get(x, y);
+        g = (get(x - 1, y) + get(x + 1, y) + get(x, y - 1) + get(x, y + 1) + 2u) >> 2;
+        r = (get(x - 1, y - 1) + get(x + 1, y - 1) + get(x - 1, y + 1) + get(x + 1, y + 1) + 2u) >> 2;
+    }
+
+    rgba_out[gid] = r | (g << 8u) | (b << 16u) | (255u << 24u);
+}

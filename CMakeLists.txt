@@ -8,10 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Threads REQUIRED)
 find_package(JPEG REQUIRED)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(EGL IMPORTED_TARGET egl)
-pkg_check_modules(GLESV2 IMPORTED_TARGET glesv2)
-pkg_check_modules(GBM IMPORTED_TARGET gbm)
+find_package(Vulkan)
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
     add_compile_options(-march=armv8-a+simd)
@@ -97,19 +94,60 @@ set(SOURCES
     ${EMBEDDED_ASSETS_CPP}
 )
 
-if(EGL_FOUND AND GLESV2_FOUND AND GBM_FOUND)
-    list(APPEND SOURCES src/gpu_isp.cpp)
-    add_definitions(-DHAS_GPU_ISP=1)
-    message(STATUS "GPU ISP enabled (EGL + GLES + GBM found)")
+# --- GPU ISP (Vulkan compute) ---
+set(SHADER_GENERATED_DIR "${GENERATED_DIR}/shaders")
+
+if(Vulkan_FOUND)
+    find_program(GLSLC_EXECUTABLE NAMES glslc)
+    if(NOT GLSLC_EXECUTABLE)
+        message(STATUS "Vulkan ISP disabled (glslc not found in PATH)")
+        set(VULKAN_ISP_ENABLED FALSE)
+    else()
+        set(VULKAN_ISP_ENABLED TRUE)
+    endif()
 else()
-    add_definitions(-DHAS_GPU_ISP=0)
-    message(STATUS "GPU ISP disabled (missing EGL/GLES/GBM)")
+    message(STATUS "Vulkan ISP disabled (Vulkan SDK not found)")
+    set(VULKAN_ISP_ENABLED FALSE)
+endif()
+
+if(VULKAN_ISP_ENABLED)
+    file(MAKE_DIRECTORY "${SHADER_GENERATED_DIR}")
+
+    set(SHADER_SOURCES
+        unpack.comp
+        demosaic.comp
+    )
+    set(SHADER_HEADERS "")
+    foreach(SHADER ${SHADER_SOURCES})
+        set(SHADER_SRC "${CMAKE_SOURCE_DIR}/src/shaders/${SHADER}")
+        set(SHADER_OUT "${SHADER_GENERATED_DIR}/${SHADER}.h")
+        add_custom_command(
+            OUTPUT "${SHADER_OUT}"
+            COMMAND ${GLSLC_EXECUTABLE}
+                    -O
+                    --target-env=vulkan1.0
+                    -mfmt=c
+                    "${SHADER_SRC}"
+                    -o "${SHADER_OUT}"
+            DEPENDS "${SHADER_SRC}"
+            COMMENT "glslc ${SHADER} → SPIR-V C array"
+            VERBATIM
+        )
+        list(APPEND SHADER_HEADERS "${SHADER_OUT}")
+    endforeach()
+
+    list(APPEND SOURCES src/vulkan_isp.cpp ${SHADER_HEADERS})
+    add_definitions(-DHAS_VULKAN_ISP=1)
+    message(STATUS "Vulkan ISP enabled (glslc: ${GLSLC_EXECUTABLE})")
+else()
+    add_definitions(-DHAS_VULKAN_ISP=0)
 endif()
 
 add_executable(fajita-webcam ${SOURCES})
 
 target_include_directories(fajita-webcam PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    ${GENERATED_DIR}
 )
 
 target_compile_options(fajita-webcam PRIVATE -O2 -Wall -Wextra)
@@ -119,10 +157,6 @@ target_link_libraries(fajita-webcam PRIVATE
     Threads::Threads
 )
 
-if(EGL_FOUND AND GLESV2_FOUND AND GBM_FOUND)
-    target_link_libraries(fajita-webcam PRIVATE
-        PkgConfig::EGL
-        PkgConfig::GLESV2
-        PkgConfig::GBM
-    )
+if(VULKAN_ISP_ENABLED)
+    target_link_libraries(fajita-webcam PRIVATE Vulkan::Vulkan)
 endif()

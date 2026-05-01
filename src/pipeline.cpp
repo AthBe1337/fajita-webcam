@@ -161,7 +161,7 @@ bool Pipeline::start() {
         if (!camera_.start_streaming())
             return false;
     }
-#if HAS_GPU_ISP
+#if HAS_VULKAN_ISP
     if (!gpu_isp_.is_available()) {
         if (gpu_isp_.init())
             LOG_DEBUG("Pipeline: GPU ISP available");
@@ -298,7 +298,7 @@ void Pipeline::capture_loop() {
         auto t0 = Clock::now();
 
         bool used_gpu = false;
-#if HAS_GPU_ISP
+#if HAS_VULKAN_ISP
         // GPU fast path: handles standard (non-quad-Bayer) sensors
         if (gpu_isp_.is_available() && cam_cfg->cfa_block != 2) {
             if (!gpu_configured_ ||

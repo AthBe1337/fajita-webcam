@@ -2,8 +2,8 @@
 #include "camera.h"
 #include "stream.h"
 #include "threadpool.h"
-#if HAS_GPU_ISP
-#include "gpu_isp.h"
+#if HAS_VULKAN_ISP
+#include "vulkan_isp.h"
 #endif
 #include <atomic>
 #include <mutex>
@@ -74,9 +74,9 @@ private:
     // Thread pool for parallel ISP processing (CPU fallback)
     ThreadPool isp_pool_;
 
-#if HAS_GPU_ISP
-    // GPU-accelerated ISP (preferred when available)
-    GpuIsp gpu_isp_;
+#if HAS_VULKAN_ISP
+    // Vulkan compute-shader ISP (preferred when available)
+    VulkanIsp gpu_isp_;
     bool gpu_configured_ = false;
 #endif
 
